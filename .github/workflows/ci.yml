@@ -28,3 +28,58 @@ jobs:
 
       - name: Collect eval suite (no live model required)
         run: uv run pytest --collect-only -m slow -q
+
+  # C++ bridge: build with warnings as errors and run the SPSC stress test on
+  # both x86-64 and arm64. arm64 matters here: its memory model is weaker than
+  # x86-64's, so acquire/release mistakes that x86 hides can surface there.
+  # These are shared VMs on a stock kernel -- this proves correctness, not
+  # real-time latency.
+  cpp:
+    name: cpp (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-Werror"
+
+      - name: Build
+        run: cmake --build cpp/build -j
+
+      - name: Test
+        run: ctest --test-dir cpp/build --output-on-failure
+
+  # ThreadSanitizer on the same stress test. Any data race report fails the job.
+  tsan:
+    name: tsan (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ubuntu 24.04 kernels use high mmap ASLR entropy, which older TSan
+      # runtimes reject ("unexpected memory mapping"). 28 bits is TSan-safe.
+      - name: Lower mmap ASLR entropy for TSan
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Configure (TSan)
+        run: >
+          cmake -S cpp -B cpp/build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -O1"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
+
+      - name: Build stress test
+        run: cmake --build cpp/build-tsan -j --target spsc_ring_buffer_test
+
+      - name: Run under TSan
+        env:
+          TSAN_OPTIONS: halt_on_error=1
+        run: ./cpp/build-tsan/spsc_ring_buffer_test
