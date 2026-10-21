@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](pyproject.toml)
 
-**A lock-free, PREEMPT_RT-oriented IPC bridge connecting a Python agent to a 1 kHz C++ motor-control loop over POSIX shared memory — zero-copy, wait-free, and built to fail loudly rather than silently degrade when the real-time guarantees it asks for aren't granted.** Verified with a 5,000,000-operation concurrent stress test and a live cross-process, cross-language integration run — see [What's verified, and what isn't](#whats-verified-and-what-isnt) for the honest accounting, including the parts that still need real PREEMPT_RT hardware to mean anything.
+**Lock-free POSIX shared-memory bridge between a Python LangGraph agent and a 1 kHz C++ real-time loop. Wait-free SPSC rings; TSan-clean on x86-64 and arm64 in CI. PREEMPT_RT hardware validation pending..
 
 ## Architecture
 
