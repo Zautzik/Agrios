@@ -62,6 +62,7 @@ def stats_from_histogram(hist: Counter, overflow: int, exact_min: float, exact_m
 def load_cyclictest(paths: list[str]) -> dict:
     hist, overflow, mins, maxes, weighted_mean, total = Counter(), 0, [], [], 0.0, 0
     preempt_rt, kernel = False, "?"
+    per_run = []
     for path in paths:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -72,7 +73,9 @@ def load_cyclictest(paths: list[str]) -> dict:
         h = Counter({int(k): int(v) for k, v in t.get("histogram", {}).items()})
         cycles = int(t["cycles"])
         hist += h
-        overflow += max(0, cycles - sum(h.values()))  # samples beyond the histogram range
+        run_overflow = max(0, cycles - sum(h.values()))  # samples beyond the histogram range
+        overflow += run_overflow
+        per_run.append(stats_from_histogram(h, run_overflow, float(t["min"]), float(t["max"])))
         mins.append(float(t["min"]))
         maxes.append(float(t["max"]))
         weighted_mean += float(t["avg"]) * cycles
@@ -81,7 +84,7 @@ def load_cyclictest(paths: list[str]) -> dict:
         kernel = data.get("sysinfo", {}).get("release", kernel)
     out = stats_from_histogram(hist, overflow, min(mins), max(maxes))
     out.update(mean=weighted_mean / total if total else float("nan"), runs=len(paths),
-               preempt_rt=preempt_rt, kernel=kernel)
+               per_run=per_run, preempt_rt=preempt_rt, kernel=kernel)
     return out
 
 
@@ -90,15 +93,19 @@ def load_agrios(paths: list[str]) -> dict:
     iterations = dropped = minor = major = 0
     faults_measured, dma_held = True, True
     first = None
+    per_run = []
     for path in paths:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         first = first or data
         if "histogram_us" not in data:
             raise SystemExit(f"{path}: no histogram_us -- rebuild motor_control_rt_loop")
-        hist += Counter({int(k): int(v) for k, v in data["histogram_us"].items()})
-        overflow += int(data.get("histogram_overflow", 0))
+        h = Counter({int(k): int(v) for k, v in data["histogram_us"].items()})
+        run_overflow = int(data.get("histogram_overflow", 0))
+        hist += h
+        overflow += run_overflow
         lat = data["latency_us"]
+        per_run.append(stats_from_histogram(h, run_overflow, float(lat["min"]), float(lat["max"])))
         mins.append(float(lat["min"]))
         maxes.append(float(lat["max"]))
         weighted_mean += float(lat["mean"]) * int(data["samples"])
@@ -114,13 +121,22 @@ def load_agrios(paths: list[str]) -> dict:
         dma_held &= bool(data.get("cpu_dma_latency_held", False))
     out = stats_from_histogram(hist, overflow, min(mins), max(maxes))
     out.update(
-        mean=weighted_mean / total if total else float("nan"), runs=len(paths),
+        mean=weighted_mean / total if total else float("nan"), runs=len(paths), per_run=per_run,
         iterations=iterations, dropped=dropped,
         faults={"minor": minor, "major": major} if faults_measured else None,
         dma_latency_held=dma_held, preempt_rt=bool(first["kernel"]["preempt_rt"]),
         kernel=first["kernel"]["release"], priority=first.get("priority"), core=first.get("core"),
     )
     return out
+
+
+def run_order(ct_runs: list, ag_runs: list) -> list:
+    """(tool, stats) pairs in the order rt_validate.sh runs them: with two runs each that's
+    cyclictest, Agrios, Agrios, cyclictest; otherwise all cyclictest runs, then all Agrios."""
+    if len(ct_runs) == 2 and len(ag_runs) == 2:
+        return [("cyclictest", ct_runs[0]), ("Agrios", ag_runs[0]),
+                ("Agrios", ag_runs[1]), ("cyclictest", ct_runs[1])]
+    return [("cyclictest", r) for r in ct_runs] + [("Agrios", r) for r in ag_runs]
 
 
 def fmt(value: float, decimals: int = 0) -> str:
@@ -158,6 +174,17 @@ def render(ct: dict, ag: dict, label: str, load: str, context: str) -> str:
         f"| **max** | **{fmt(ct['max'])}** | **{fmt(ag['max'], 1)}** |",
         f"| wake-ups > 200 µs late | {ct['over_200us']:,} | {ag['over_200us']:,} |",
         f"| wake-ups ≥ 1 period late | {ct['missed']:,} | {ag['missed']:,} |",
+        "",
+        "Each run on its own, in the order they ran (how much each tool varies from run to run "
+        "is the yardstick for any gap between them):",
+        "",
+        "| run | tool | p50 | p99 | p99.9 | max | > 200 µs late |",
+        "|---:|---|---:|---:|---:|---:|---:|",
+    ]
+    for i, (tool, r) in enumerate(run_order(ct["per_run"], ag["per_run"]), start=1):
+        lines.append(f"| {i} | {tool} | {fmt(r['p50'])} | {fmt(r['p99'])} | {fmt(r['p99_9'])} | "
+                     f"{fmt(r['max'])} | {r['over_200us']:,} |")
+    lines += [
         "",
         "Agrios-only checks:",
         "",
