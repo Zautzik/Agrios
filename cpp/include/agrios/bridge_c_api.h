@@ -28,6 +28,8 @@
 
 #include <stdint.h>
 
+#include "agrios/nonblocking.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -54,11 +56,16 @@ AgriosBridgeHandle* agrios_bridge_open(const char* shm_name, int is_owner);
  * unlinks the shared-memory segment. */
 void agrios_bridge_close(AgriosBridgeHandle* handle);
 
+/* push/pop below are AGRIOS_NONBLOCKING (see nonblocking.h): the RT control
+ * step calls them every millisecond, so they are compile-time and
+ * sanitizer-checked never to allocate, lock, or block. open/close are not --
+ * they allocate and make system calls, and belong in setup/teardown only. */
+
 /* Returns 1 on success, 0 if the ring buffer is full. */
-int agrios_bridge_push(AgriosBridgeHandle* handle, const AgriosPose6D* pose);
+int agrios_bridge_push(AgriosBridgeHandle* handle, const AgriosPose6D* pose) AGRIOS_NONBLOCKING;
 
 /* Returns 1 on success (out is filled in), 0 if the ring buffer is empty. */
-int agrios_bridge_pop(AgriosBridgeHandle* handle, AgriosPose6D* out);
+int agrios_bridge_pop(AgriosBridgeHandle* handle, AgriosPose6D* out) AGRIOS_NONBLOCKING;
 
 /* ---- Joint telemetry: motor control -> monitoring/perception ---- */
 
@@ -77,13 +84,14 @@ AgriosJointBridgeHandle* agrios_joint_bridge_open(const char* shm_name, int is_o
 void agrios_joint_bridge_close(AgriosJointBridgeHandle* handle);
 
 /* Returns 1 on success, 0 if the ring buffer is full. */
-int agrios_joint_bridge_push(AgriosJointBridgeHandle* handle, const AgriosJointState6* state);
+int agrios_joint_bridge_push(AgriosJointBridgeHandle* handle,
+                             const AgriosJointState6* state) AGRIOS_NONBLOCKING;
 
 /* Returns 1 on success (out is filled in), 0 if the ring buffer is empty.
  * Never blocks the writer -- SPSCRingBuffer's pop() is wait-free by
  * construction (see spsc_ring_buffer.hpp), so a reader calling this, however
  * slowly or however often, can never stall the RT loop's push()es. */
-int agrios_joint_bridge_pop(AgriosJointBridgeHandle* handle, AgriosJointState6* out);
+int agrios_joint_bridge_pop(AgriosJointBridgeHandle* handle, AgriosJointState6* out) AGRIOS_NONBLOCKING;
 
 #ifdef __cplusplus
 } /* extern "C" */

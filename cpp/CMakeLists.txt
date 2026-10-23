@@ -51,5 +51,13 @@ add_executable(spsc_ring_buffer_test tests/spsc_ring_buffer_test.cpp)
 target_include_directories(spsc_ring_buffer_test PRIVATE include)
 target_link_libraries(spsc_ring_buffer_test PRIVATE Threads::Threads)
 
+# Real-time-safety test for the control step (agrios/control_tick.hpp): run
+# under RealtimeSanitizer in CI, where any allocation, lock, or blocking call
+# reached from control_tick aborts it. In an ordinary build it's a functional
+# test of the same function. See the comment at the top of the file.
+add_executable(rt_safety_test tests/rt_safety_test.cpp)
+target_link_libraries(rt_safety_test PRIVATE agrios_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME spsc_ring_buffer_test COMMAND spsc_ring_buffer_test)
+add_test(NAME rt_safety_test COMMAND rt_safety_test)

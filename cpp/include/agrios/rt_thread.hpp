@@ -6,12 +6,15 @@
 // control loop this exists for, and cpp/README.md for the full writeup of
 // what each step buys you and what it doesn't.
 
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <string>
 
@@ -103,12 +106,17 @@ inline RtSetupResult configure_current_thread_realtime(const RtThreadConfig& cfg
     // what actually makes "real-time" mean something here: without it, the
     // kernel's completely fair scheduler is free to delay this thread behind
     // other CPU-bound work for an unbounded amount of time.
+    //
+    // pthread_* functions return their error code rather than setting errno,
+    // so the message is built from the return value -- reading errno here
+    // reported whatever an earlier call had left in it ("failed: Success"
+    // for an out-of-range core, found by actually passing one).
     sched_param sch{};
     sch.sched_priority = cfg.priority;
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch) != 0) {
+    if (const int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch); rc != 0) {
         return {false, std::string("pthread_setschedparam(SCHED_FIFO, ") +
                             std::to_string(cfg.priority) +
-                            ") failed: " + std::strerror(errno) + " (needs CAP_SYS_NICE or root)"};
+                            ") failed: " + std::strerror(rc) + " (needs CAP_SYS_NICE or root)"};
     }
 
     // 4. Pin to a specific core, if requested. This alone does not isolate
@@ -119,13 +127,85 @@ inline RtSetupResult configure_current_thread_realtime(const RtThreadConfig& cfg
         cpu_set_t cpu_set;
         CPU_ZERO(&cpu_set);
         CPU_SET(cfg.cpu_core, &cpu_set);
-        if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set), &cpu_set) != 0) {
+        if (const int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set), &cpu_set); rc != 0) {
             return {false, std::string("pthread_setaffinity_np(core ") +
-                                std::to_string(cfg.cpu_core) + ") failed: " + std::strerror(errno)};
+                                std::to_string(cfg.cpu_core) + ") failed: " + std::strerror(rc)};
         }
     }
 
     return {true, {}};
 }
+
+// Moves the calling thread off `rt_core`: allows it every CPU except that
+// one. Call it from main() before creating any other thread, and everything
+// spawned afterwards inherits it -- the monitor thread included. The RT
+// thread then pins itself onto rt_core in configure_current_thread_realtime()
+// (a thread may set any CPU its cpuset allows, not just its parent's mask).
+// Keeping ordinary threads off the RT core is standard real-time practice:
+// otherwise the scheduler is free to run them there, and every RT wake-up
+// that lands while one is mid-system-call has to wait for it to reach a
+// preemption point first. A no-op when rt_core < 0 or there's only one CPU.
+inline bool keep_current_thread_off_core(int rt_core) {
+    if (rt_core < 0) {
+        return true;
+    }
+    if (rt_core >= CPU_SETSIZE) {
+        return false;  // not a CPU this mask can describe
+    }
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    if (pthread_getaffinity_np(pthread_self(), sizeof(allowed), &allowed) != 0) {
+        return false;
+    }
+    CPU_CLR(rt_core, &allowed);
+    if (CPU_COUNT(&allowed) == 0) {
+        return true;  // single-CPU machine: nowhere else to go
+    }
+    return pthread_setaffinity_np(pthread_self(), sizeof(allowed), &allowed) == 0;
+}
+
+// Holds the CPU in shallow idle states for as long as this object lives, via
+// the kernel's PM QoS interface: writing 0 to /dev/cpu_dma_latency and
+// keeping the file open asks the kernel to allow no idle state whose exit
+// latency is above 0 us. Waking from a deep C-state can take tens to
+// hundreds of microseconds on its own, on top of whatever the scheduler
+// does -- a classic, hardware-level source of wake-up latency that SCHED_FIFO
+// and mlockall don't touch. Real-time applications hold this for their whole
+// run, and so does cyclictest by default, which matters here: comparing this
+// loop against cyclictest is only fair if both run with it held.
+//
+// Process-wide, released when the file is closed. Needs root (the device is
+// root-only); failure is reported, not fatal -- it affects latency, not
+// correctness, and it's recorded in the --report output either way.
+class CpuDmaLatencyGuard {
+   public:
+    CpuDmaLatencyGuard() {
+        fd_ = ::open("/dev/cpu_dma_latency", O_RDWR | O_CLOEXEC);
+        if (fd_ < 0) {
+            error_ = std::string("open(/dev/cpu_dma_latency) failed: ") + std::strerror(errno);
+            return;
+        }
+        const std::int32_t target_us = 0;
+        if (::write(fd_, &target_us, sizeof(target_us)) != static_cast<ssize_t>(sizeof(target_us))) {
+            error_ = std::string("write(/dev/cpu_dma_latency) failed: ") + std::strerror(errno);
+            ::close(fd_);
+            fd_ = -1;
+        }
+    }
+    ~CpuDmaLatencyGuard() {
+        if (fd_ >= 0) {
+            ::close(fd_);
+        }
+    }
+    CpuDmaLatencyGuard(const CpuDmaLatencyGuard&) = delete;
+    CpuDmaLatencyGuard& operator=(const CpuDmaLatencyGuard&) = delete;
+
+    bool held() const { return fd_ >= 0; }
+    const std::string& error() const { return error_; }
+
+   private:
+    int fd_ = -1;
+    std::string error_;
+};
 
 }  // namespace agrios::rt

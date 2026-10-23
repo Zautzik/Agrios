@@ -65,7 +65,7 @@ AgriosBridgeHandle* agrios_bridge_open(const char* shm_name, int is_owner) {
 
 void agrios_bridge_close(AgriosBridgeHandle* handle) { delete handle; }
 
-int agrios_bridge_push(AgriosBridgeHandle* handle, const AgriosPose6D* pose) {
+int agrios_bridge_push(AgriosBridgeHandle* handle, const AgriosPose6D* pose) AGRIOS_NONBLOCKING {
     if (handle == nullptr || pose == nullptr) {
         return 0;
     }
@@ -76,7 +76,7 @@ int agrios_bridge_push(AgriosBridgeHandle* handle, const AgriosPose6D* pose) {
     return handle->bridge.get().push(typed_pose) ? 1 : 0;
 }
 
-int agrios_bridge_pop(AgriosBridgeHandle* handle, AgriosPose6D* out) {
+int agrios_bridge_pop(AgriosBridgeHandle* handle, AgriosPose6D* out) AGRIOS_NONBLOCKING {
     if (handle == nullptr || out == nullptr) {
         return 0;
     }
@@ -100,7 +100,8 @@ AgriosJointBridgeHandle* agrios_joint_bridge_open(const char* shm_name, int is_o
 
 void agrios_joint_bridge_close(AgriosJointBridgeHandle* handle) { delete handle; }
 
-int agrios_joint_bridge_push(AgriosJointBridgeHandle* handle, const AgriosJointState6* state) {
+int agrios_joint_bridge_push(AgriosJointBridgeHandle* handle,
+                             const AgriosJointState6* state) AGRIOS_NONBLOCKING {
     if (handle == nullptr || state == nullptr) {
         return 0;
     }
@@ -108,7 +109,7 @@ int agrios_joint_bridge_push(AgriosJointBridgeHandle* handle, const AgriosJointS
     return handle->bridge.get().push(typed_state) ? 1 : 0;
 }
 
-int agrios_joint_bridge_pop(AgriosJointBridgeHandle* handle, AgriosJointState6* out) {
+int agrios_joint_bridge_pop(AgriosJointBridgeHandle* handle, AgriosJointState6* out) AGRIOS_NONBLOCKING {
     if (handle == nullptr || out == nullptr) {
         return 0;
     }
