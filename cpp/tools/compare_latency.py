@@ -5,12 +5,18 @@ cyclictest (from rt-tests) is the standard latency benchmark for PREEMPT_RT
 systems: a bare thread that sleeps to an absolute deadline, wakes, and records
 how late it woke. The Agrios loop measures exactly the same quantity for its
 own wake-ups (motor_control_rt_loop --report), while also doing its real
-per-period work over the shared-memory bridge. Run back to back on the same
-core, priority, period and load, the gap between the two columns is what the
-Agrios loop adds on top of what the platform itself delivers.
+per-period work over the shared-memory bridge. Measured under the same
+conditions, the gap between the two columns is what the Agrios loop adds on
+top of what the platform itself delivers.
+
+Fairness rules this script relies on (tools/rt_validate.sh sets them up):
+  - several runs per tool, interleaved (cyclictest, Agrios, Agrios,
+    cyclictest), so neither tool always gets the quieter time slot;
+  - every statistic for both tools is computed here, the same way, from the
+    merged 1 us histograms -- not taken from each tool's own summary.
 
 Usage:
-    compare_latency.py --cyclictest cyclictest.json --agrios agrios.json \
+    compare_latency.py --cyclictest a.json [b.json ...] --agrios c.json [d.json ...] \
         [--label NAME] [--load DESCRIPTION] [--context TEXT] [--require-zero-faults]
 
 Prints a Markdown report. With --require-zero-faults, exits 1 if the Agrios
@@ -22,74 +28,99 @@ import argparse
 import json
 import math
 import sys
+from collections import Counter
 
 
-def histogram_percentile(hist: dict[int, int], total: int, q: float, max_value: float) -> float:
-    """Smallest whole-microsecond value with at least q of the samples at or below it.
-    Falls back to the exact maximum when the sample lands beyond the histogram."""
-    if total == 0:
-        return float("nan")
-    target = max(1, math.ceil(q * total))
-    cumulative = 0
-    for us in sorted(hist):
-        cumulative += hist[us]
-        if cumulative >= target:
-            return float(us)
-    return float(max_value)
+def stats_from_histogram(hist: Counter, overflow: int, exact_min: float, exact_max: float) -> dict:
+    """Latency statistics from a {whole_us: count} histogram plus samples beyond its range.
+    Percentiles: the smallest whole-microsecond value with at least q of the samples at or
+    below it; the exact maximum when that sample lies beyond the histogram."""
+    total = sum(hist.values()) + overflow
 
+    def pct(q: float) -> float:
+        target = max(1, math.ceil(q * total))
+        cumulative = 0
+        for us in sorted(hist):
+            cumulative += hist[us]
+            if cumulative >= target:
+                return float(us)
+        return float(exact_max)
 
-def load_cyclictest(path: str) -> dict:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    threads = data["thread"]
-    if len(threads) != 1:
-        raise SystemExit(f"{path}: expected one measurement thread, found {len(threads)}")
-    t = next(iter(threads.values()))
-    hist = {int(k): int(v) for k, v in t.get("histogram", {}).items()}
-    total = int(t["cycles"])
-    in_hist = sum(hist.values())
-    beyond = max(0, total - in_hist)  # samples past the histogram range
     return {
         "samples": total,
-        "min": float(t["min"]),
-        "mean": float(t["avg"]),
-        "p50": histogram_percentile(hist, total, 0.50, t["max"]),
-        "p99": histogram_percentile(hist, total, 0.99, t["max"]),
-        "p99_9": histogram_percentile(hist, total, 0.999, t["max"]),
-        "p99_99": histogram_percentile(hist, total, 0.9999, t["max"]),
-        "max": float(t["max"]),
-        "over_200us": sum(v for k, v in hist.items() if k > 200) + beyond,
-        "missed": sum(v for k, v in hist.items() if k >= 1000) + beyond,
-        "preempt_rt": bool(data.get("sysinfo", {}).get("realtime", 0)),
-        "kernel": data.get("sysinfo", {}).get("release", "?"),
+        "min": float(exact_min),
+        "p50": pct(0.50),
+        "p99": pct(0.99),
+        "p99_9": pct(0.999),
+        "p99_99": pct(0.9999),
+        "max": float(exact_max),
+        "over_200us": sum(v for k, v in hist.items() if k > 200) + overflow,
+        "missed": sum(v for k, v in hist.items() if k >= 1000) + overflow,
     }
 
 
-def load_agrios(path: str) -> dict:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    lat = data["latency_us"]
-    over_key = next(k for k in data if k.startswith("overruns_over_"))
-    return {
-        "samples": int(data["samples"]),
-        "min": float(lat["min"]),
-        "mean": float(lat["mean"]),
-        "p50": float(lat["p50"]),
-        "p99": float(lat["p99"]),
-        "p99_9": float(lat["p99_9"]),
-        "p99_99": float(lat["p99_99"]),
-        "max": float(lat["max"]),
-        "over_200us": int(data[over_key]),
-        "missed": int(data["missed_periods"]),
-        "iterations": int(data["iterations"]),
-        "dropped": int(data["telemetry_dropped"]),
-        "faults": data.get("page_faults_in_loop"),
-        "preempt_rt": bool(data["kernel"]["preempt_rt"]),
-        "kernel": data["kernel"]["release"],
-        "priority": data.get("priority"),
-        "core": data.get("core"),
-        "dma_latency_held": data.get("cpu_dma_latency_held"),
-    }
+def load_cyclictest(paths: list[str]) -> dict:
+    hist, overflow, mins, maxes, weighted_mean, total = Counter(), 0, [], [], 0.0, 0
+    preempt_rt, kernel = False, "?"
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        threads = data["thread"]
+        if len(threads) != 1:
+            raise SystemExit(f"{path}: expected one measurement thread, found {len(threads)}")
+        t = next(iter(threads.values()))
+        h = Counter({int(k): int(v) for k, v in t.get("histogram", {}).items()})
+        cycles = int(t["cycles"])
+        hist += h
+        overflow += max(0, cycles - sum(h.values()))  # samples beyond the histogram range
+        mins.append(float(t["min"]))
+        maxes.append(float(t["max"]))
+        weighted_mean += float(t["avg"]) * cycles
+        total += cycles
+        preempt_rt |= bool(data.get("sysinfo", {}).get("realtime", 0))
+        kernel = data.get("sysinfo", {}).get("release", kernel)
+    out = stats_from_histogram(hist, overflow, min(mins), max(maxes))
+    out.update(mean=weighted_mean / total if total else float("nan"), runs=len(paths),
+               preempt_rt=preempt_rt, kernel=kernel)
+    return out
+
+
+def load_agrios(paths: list[str]) -> dict:
+    hist, overflow, mins, maxes, weighted_mean, total = Counter(), 0, [], [], 0.0, 0
+    iterations = dropped = minor = major = 0
+    faults_measured, dma_held = True, True
+    first = None
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        first = first or data
+        if "histogram_us" not in data:
+            raise SystemExit(f"{path}: no histogram_us -- rebuild motor_control_rt_loop")
+        hist += Counter({int(k): int(v) for k, v in data["histogram_us"].items()})
+        overflow += int(data.get("histogram_overflow", 0))
+        lat = data["latency_us"]
+        mins.append(float(lat["min"]))
+        maxes.append(float(lat["max"]))
+        weighted_mean += float(lat["mean"]) * int(data["samples"])
+        total += int(data["samples"])
+        iterations += int(data["iterations"])
+        dropped += int(data["telemetry_dropped"])
+        faults = data.get("page_faults_in_loop")
+        if faults is None:
+            faults_measured = False
+        else:
+            minor += int(faults["minor"])
+            major += int(faults["major"])
+        dma_held &= bool(data.get("cpu_dma_latency_held", False))
+    out = stats_from_histogram(hist, overflow, min(mins), max(maxes))
+    out.update(
+        mean=weighted_mean / total if total else float("nan"), runs=len(paths),
+        iterations=iterations, dropped=dropped,
+        faults={"minor": minor, "major": major} if faults_measured else None,
+        dma_latency_held=dma_held, preempt_rt=bool(first["kernel"]["preempt_rt"]),
+        kernel=first["kernel"]["release"], priority=first.get("priority"), core=first.get("core"),
+    )
+    return out
 
 
 def fmt(value: float, decimals: int = 0) -> str:
@@ -104,13 +135,16 @@ def render(ct: dict, ag: dict, label: str, load: str, context: str) -> str:
         f"## Real-time latency: {label}",
         "",
         f"Kernel `{ag['kernel']}`, PREEMPT_RT: **{rt}**. Period 1 ms (1 kHz), SCHED_FIFO priority "
-        f"{ag['priority']}, pinned to core {ag['core']}, memory locked. Load during both runs: {load}.",
+        f"{ag['priority']}, pinned to core {ag['core']}, memory locked, every other thread kept off "
+        f"that core. Load during all runs: {load}.",
     ]
     if context:
         lines += ["", context]
     lines += [
         "",
-        "Wake-up latency, microseconds (how late each period's wake-up was vs. its deadline):",
+        f"Wake-up latency in microseconds (how late each period's wake-up was vs. its deadline), "
+        f"{ct['runs']} cyclictest runs and {ag['runs']} Agrios runs, interleaved, merged; every "
+        f"figure below is computed the same way for both, from the merged histograms:",
         "",
         "| | cyclictest (platform baseline) | Agrios control loop |",
         "|---|---:|---:|",
@@ -136,24 +170,23 @@ def render(ct: dict, ag: dict, label: str, load: str, context: str) -> str:
                      f"{faults['major']} major**")
     lines.append(f"- Telemetry samples lost (monitor thread fell behind): {ag['dropped']:,} of "
                  f"{ag['iterations']:,}")
-    held = ag["dma_latency_held"]
-    if held is not None:
-        lines.append("- CPU kept out of deep idle states (/dev/cpu_dma_latency = 0, as cyclictest does): "
-                     + ("yes" if held else "no -- unavailable, so C-state exits may add latency"))
+    lines.append("- CPU kept out of deep idle states (/dev/cpu_dma_latency = 0, as cyclictest does): "
+                 + ("yes" if ag["dma_latency_held"] else "no -- unavailable, so C-state exits may add latency"))
     lines += [
         "",
         f"Gap (Agrios − cyclictest): p99 {ag['p99'] - ct['p99']:+.0f} µs, "
         f"p99.9 {ag['p99_9'] - ct['p99_9']:+.0f} µs, max {ag['max'] - ct['max']:+.0f} µs. "
-        "The two runs are sequential, not simultaneous, so some of any gap is run-to-run "
-        "variation of the platform itself.",
+        "A gap of either sign at the tail is mostly the platform varying between runs: the loop "
+        "can't wake faster than the kernel wakes it, so what to look for is whether its "
+        "distribution tracks the baseline's.",
     ]
     return "\n".join(lines) + "\n"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--cyclictest", required=True)
-    ap.add_argument("--agrios", required=True)
+    ap.add_argument("--cyclictest", required=True, nargs="+")
+    ap.add_argument("--agrios", required=True, nargs="+")
     ap.add_argument("--label", default="this machine")
     ap.add_argument("--load", default="none")
     ap.add_argument("--context", default="")

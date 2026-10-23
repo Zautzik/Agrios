@@ -8,12 +8,12 @@ on:
 
 jobs:
   smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
         with:
           version: "0.8.22"
 
@@ -42,7 +42,7 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         run: cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-Werror"
@@ -66,7 +66,7 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Ubuntu 24.04 kernels use high mmap ASLR entropy, which older TSan
       # runtimes reject ("unexpected memory mapping"). 28 bits is TSan-safe.
@@ -106,7 +106,7 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Clang 20 (function effects + RealtimeSanitizer)
         run: |
@@ -159,9 +159,11 @@ jobs:
 
   # Wake-up latency of the 1 kHz loop vs. cyclictest -- the standard PREEMPT_RT
   # benchmark -- on the same runner, core, priority and period, under stress-ng
-  # load. These are shared cloud VMs on a stock kernel, so absolute numbers are
-  # the VM's, not a real-time bound; what this measures is the gap between the
-  # two, and it enforces that the RT thread takes zero page faults in its loop.
+  # load, after a warm-up, in interleaved runs, with both tools' statistics
+  # computed the same way (see tools/rt_validate.sh). These are shared cloud VMs
+  # on a stock kernel, so absolute numbers are the VM's, not a real-time bound;
+  # what this shows is whether the loop tracks the baseline, and it enforces
+  # that the RT thread takes zero page faults in its loop.
   # The same script is what runs on real PREEMPT_RT hardware (see cpp/README.md).
   rt-latency:
     name: rt-latency (${{ matrix.os }})
@@ -171,9 +173,9 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Run cyclictest and the Agrios loop under load (60 s each)
+      - name: Run cyclictest and the Agrios loop under load (60 s each, interleaved)
         run: cpp/tools/rt_validate.sh --duration 60 --label "GitHub ${{ matrix.os }} (shared VM, stock kernel)" --out rt-results
 
       - name: Publish the comparison
@@ -183,7 +185,7 @@ jobs:
 
       - name: Keep the raw results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: rt-latency-${{ matrix.os }}
           path: rt-results/

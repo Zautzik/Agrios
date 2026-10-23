@@ -256,11 +256,16 @@ cpp/tools/rt_validate.sh --duration 300 --label my-laptop
 The script:
 1. Installs `cmake g++ rt-tests stress-ng` if they're missing (Debian/Ubuntu).
 2. Builds the loop.
-3. Starts `stress-ng` on every core, the pinned one included.
-4. Runs `cyclictest` and then the Agrios loop at the same SCHED_FIFO
-   priority (90 by default), period (1 ms), core, and duration.
+3. Starts `stress-ng` on every core, the pinned one included, and lets it
+   warm up (30 s by default) so neither tool measures its start-up spike.
+4. Runs `cyclictest` and the Agrios loop at the same SCHED_FIFO priority (90
+   by default), period (1 ms), and core. Each tool's time is split into two
+   runs, interleaved: cyclictest, Agrios, Agrios, cyclictest. `cyclictest`
+   gets `--mainaffinity` so its main thread stays off the measured core, as
+   the Agrios loop's non-RT threads do.
 5. Writes `results/rt/<label>-<time>/summary.md` with both columns, plus the
-   raw JSON from each.
+   raw JSON from every run. Every statistic for both tools is computed by
+   `compare_latency.py` the same way, from the merged 1 µs histograms.
 
 It reports whether the kernel was PREEMPT_RT, the CPU, the frequency
 governor, and whether any core isolation was configured, so a number is

@@ -155,4 +155,10 @@ Real-time verification: turning "real-time safe" from a claim in comments into s
 
 The same script runs in CI on both architectures and on real hardware.
 
+**The first real numbers were too good, which made them wrong.** On the first CI run, the loop's tail came out far better than `cyclictest`'s on the same runner: p99 22 µs vs 212 µs on x86-64, and a max of 241 µs vs 1,444 µs on arm64. A loop the kernel wakes through exactly the same path can't wake faster than the bare benchmark of that path, so a 10× "win" was evidence against the measurement, not for the code. Reading the script back found the bias:
+- `cyclictest` always ran first, during `stress-ng`'s start-up, when it's filling 40% of RAM. The loop always ran second, after the load had settled.
+- The loop's non-RT threads had just been moved off the measured core, but `cyclictest`'s main thread hadn't.
+
+The fix makes the comparison even instead of favorable. The load warms up before anything is measured. Each tool's time is split into interleaved runs (cyclictest, loop, loop, cyclictest). `cyclictest` gets `--mainaffinity` to match. And `compare_latency.py` computes every statistic for both tools the same way, from their merged histograms (the loop's report now includes its full histogram), instead of trusting each tool's own summary. The lesson for this log: when your system beats the baseline it's built on, suspect the comparison first.
+
 **What the development machine could and couldn't show.** This pass was built on a 2-vCPU cloud VM. The safety checks and the zero-fault result don't depend on the platform, and both were verified there. The latency numbers do: maxima swung between about 2 ms and 40 ms from run to run, for `cyclictest` and the loop alike. That's hypervisor noise, so no latency claim was drawn from that machine. That's what the CI runs and a bare-metal PREEMPT_RT run are for.

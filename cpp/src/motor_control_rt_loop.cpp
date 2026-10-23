@@ -283,6 +283,21 @@ class LatencyHistogram {
         return max_us();
     }
 
+    // Sparse {microseconds: count} pairs, the shape cyclictest's JSON uses,
+    // so runs can be merged and both tools' percentiles computed the same way.
+    void write_sparse_json(FILE* f) const {
+        bool first = true;
+        for (std::size_t us = 0; us < kBins; ++us) {
+            if (bins_[us] == 0) {
+                continue;
+            }
+            std::fprintf(f, "%s\"%zu\": %llu", first ? "" : ", ", us,
+                         static_cast<unsigned long long>(bins_[us]));
+            first = false;
+        }
+    }
+
+    std::uint64_t overflow() const { return overflow_; }
     std::uint64_t count() const { return count_; }
     std::uint64_t overruns() const { return overruns_; }
     std::uint64_t missed_periods() const { return missed_periods_; }
@@ -395,6 +410,10 @@ bool write_report(const char* path, const agrios::rt::RtThreadConfig& cfg, const
     std::fprintf(f, "  \"overruns_over_%lldus\": %llu,\n", static_cast<long long>(kOverrunThresholdNs / 1000),
                  static_cast<unsigned long long>(h.overruns()));
     std::fprintf(f, "  \"missed_periods\": %llu,\n", static_cast<unsigned long long>(h.missed_periods()));
+    std::fprintf(f, "  \"histogram_us\": {");
+    h.write_sparse_json(f);
+    std::fprintf(f, "},\n");
+    std::fprintf(f, "  \"histogram_overflow\": %llu,\n", static_cast<unsigned long long>(h.overflow()));
     if (result.page_faults_measured) {
         std::fprintf(f, "  \"page_faults_in_loop\": {\"minor\": %ld, \"major\": %ld},\n",
                      result.minor_page_faults, result.major_page_faults);
