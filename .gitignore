@@ -7,3 +7,5 @@ __pycache__/
 *.db-wal
 langfuse-server/
 cpp/build/
+# every CMake build dir: build-rt (tools/rt_validate.sh), build-fx, build-rtsan, build-tsan (CI)
+cpp/build-*/

@@ -53,7 +53,11 @@ jobs:
       - name: Test
         run: ctest --test-dir cpp/build --output-on-failure
 
-  # ThreadSanitizer on the same stress test. Any data race report fails the job.
+  # ThreadSanitizer on the SPSC stress test, and on rt_safety_test, which
+  # drives the shared-memory bridge (shm_open/mmap-backed rings) and the
+  # control step from several threads. Any data race report fails the job.
+  # (TSan only sees one process, so a race *across* the process boundary is
+  # out of its reach -- the same code path within one process is not.)
   tsan:
     name: tsan (${{ matrix.os }})
     strategy:
@@ -76,10 +80,110 @@ jobs:
           -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
           -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=thread"
 
-      - name: Build stress test
-        run: cmake --build cpp/build-tsan -j --target spsc_ring_buffer_test
+      - name: Build stress test and shared-memory bridge test
+        run: cmake --build cpp/build-tsan -j --target spsc_ring_buffer_test rt_safety_test
 
       - name: Run under TSan
         env:
           TSAN_OPTIONS: halt_on_error=1
-        run: ./cpp/build-tsan/spsc_ring_buffer_test
+        run: |
+          ./cpp/build-tsan/spsc_ring_buffer_test
+          ./cpp/build-tsan/rt_safety_test
+
+  # Real-time safety of the 1 ms control step (cpp/include/agrios/control_tick.hpp),
+  # checked two independent ways with LLVM's own tooling, on x86-64 and arm64:
+  #   1. statically: Clang's function-effect analysis proves nothing reachable
+  #      from the [[clang::nonblocking]] control step can allocate, lock, or block;
+  #   2. dynamically: RealtimeSanitizer aborts if any such call actually happens
+  #      while it runs -- in a dedicated test and in the real RT binary.
+  # Each has a negative control that must fail, so a green run can't mean the
+  # check silently didn't run.
+  rt-safety:
+    name: rt-safety (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Clang 20 (function effects + RealtimeSanitizer)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-20 libclang-rt-20-dev
+          clang++-20 --version | head -1
+          ls /usr/lib/llvm-20/lib/clang/20/lib/linux/ | grep rtsan
+
+      - name: "Static: whole project, -Werror -Wfunction-effects"
+        run: |
+          cmake -S cpp -B cpp/build-fx -DCMAKE_CXX_COMPILER=clang++-20 \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-Werror -Wfunction-effects"
+          cmake --build cpp/build-fx -j
+
+      - name: "Static negative control: a violation must fail to compile"
+        run: |
+          if clang++-20 -std=c++20 -fsyntax-only -Werror=function-effects -Icpp/include \
+               cpp/tests/nonblocking_negative_control.cpp 2> negative.log; then
+            echo "::error::the function-effect check accepted a known violation -- it is not running"
+            exit 1
+          fi
+          grep -q "function-effects" negative.log
+          echo "rejected as expected:"; cat negative.log
+
+      - name: "Dynamic: build under RealtimeSanitizer"
+        run: |
+          cmake -S cpp -B cpp/build-rtsan -DCMAKE_CXX_COMPILER=clang++-20 \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS="-fsanitize=realtime -g -O1" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=realtime" -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=realtime"
+          cmake --build cpp/build-rtsan -j
+
+      - name: "Dynamic: control step under a live producer"
+        run: ./cpp/build-rtsan/rt_safety_test
+
+      - name: "Dynamic: the real RT binary, 5,000 periods at SCHED_FIFO"
+        run: sudo ./cpp/build-rtsan/motor_control_rt_loop --priority 90 --core 1 --iterations 5000 --quiet
+
+      - name: "Dynamic negative control: an allocation must be caught"
+        run: |
+          set +e
+          ./cpp/build-rtsan/rt_safety_test --negative-control > negative.log 2>&1
+          status=$?
+          set -e
+          cat negative.log
+          if [ "$status" -eq 0 ] || ! grep -q "RealtimeSanitizer: unsafe-library-call" negative.log; then
+            echo "::error::RealtimeSanitizer did not catch a known allocation -- it is not active"
+            exit 1
+          fi
+          echo "caught as expected (exit $status)"
+
+  # Wake-up latency of the 1 kHz loop vs. cyclictest -- the standard PREEMPT_RT
+  # benchmark -- on the same runner, core, priority and period, under stress-ng
+  # load. These are shared cloud VMs on a stock kernel, so absolute numbers are
+  # the VM's, not a real-time bound; what this measures is the gap between the
+  # two, and it enforces that the RT thread takes zero page faults in its loop.
+  # The same script is what runs on real PREEMPT_RT hardware (see cpp/README.md).
+  rt-latency:
+    name: rt-latency (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run cyclictest and the Agrios loop under load (60 s each)
+        run: cpp/tools/rt_validate.sh --duration 60 --label "GitHub ${{ matrix.os }} (shared VM, stock kernel)" --out rt-results
+
+      - name: Publish the comparison
+        if: always()
+        run: |
+          if [ -f rt-results/summary.md ]; then cat rt-results/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Keep the raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rt-latency-${{ matrix.os }}
+          path: rt-results/

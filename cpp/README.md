@@ -26,7 +26,11 @@ include/agrios/
   shared_ring_buffer.hpp POSIX shm_open/mmap wrapper: places a ring buffer in shared memory
   bridge_config.hpp      the one place channel names/capacities are defined, shared by every caller
   bridge_c_api.h         plain-C ABI over both channels -- see below
-  rt_thread.hpp          PREEMPT_RT thread setup: mlockall, SCHED_FIFO, CPU affinity -- see below
+  rt_thread.hpp          PREEMPT_RT thread setup: mlockall, SCHED_FIFO, CPU affinity,
+                         idle-state (cpu_dma_latency) guard -- see below
+  control_tick.hpp       the per-period control step, [[clang::nonblocking]] -- shared by the
+                         RT binary and the tests, so what's verified is what runs
+  nonblocking.h          AGRIOS_NONBLOCKING: [[clang::nonblocking]] on Clang 20+, empty elsewhere
 src/
   bridge_c_api.cpp       implementation of the C API, built as libagrios_bridge.so
   motor_control_consumer.cpp   demo: simple, non-real-time -- verifies the pose bridge itself
@@ -37,6 +41,12 @@ python/
   joint_state_reader_demo.py     demo: reads joint telemetry the RT loop publishes
 tests/
   spsc_ring_buffer_test.cpp    concurrency correctness test (see below)
+  rt_safety_test.cpp           drives the real control step over real shared memory with a live
+                               producer; run under RealtimeSanitizer and ThreadSanitizer in CI
+  nonblocking_negative_control.cpp   must FAIL to compile -- proves the static check is running
+tools/
+  rt_validate.sh               one command: cyclictest vs. the control loop, same core/priority/load
+  compare_latency.py           the side-by-side report it writes (stdlib only)
 
 ../spatial_tools.py       LangGraph tools (submit_spatial_intent, read_joint_states)
                            wiring the Agrios agent itself to both channels -- see below
@@ -97,6 +107,28 @@ test is written to make that contention actually happen, and is meant to
 also be run under ThreadSanitizer (see the comment at the top of the file)
 for real happens-before-graph verification, not just a lucky pass.
 
+`tests/rt_safety_test.cpp` is about the control loop, not the algorithm.
+It drives the real `control_tick()` (the same function the RT binary runs)
+over real `shm_open`/`mmap` bridges, with a producer thread pushing poses and
+a telemetry drainer that stops halfway, so the no-pose, pose-received, and
+telemetry-ring-full paths all execute. CI runs it three ways:
+
+- **Under RealtimeSanitizer** (`-fsanitize=realtime`, Clang 20+). Any
+  allocation, free, lock, or blocking call reached from `control_tick` aborts
+  the run with a stack trace. `--negative-control` allocates inside a
+  nonblocking function on purpose, and CI requires RealtimeSanitizer to kill it.
+- **Under ThreadSanitizer**, covering the shared-memory bridge from several
+  threads.
+- **As a plain functional test** in every ordinary build (`ctest`).
+
+The static half is a whole-project build with `clang++-20 -Werror
+-Wfunction-effects`: anything `control_tick` calls that isn't provably
+nonblocking fails the build, including the bridge's C API (annotated and
+checked the same way). `nonblocking_negative_control.cpp` must fail that
+check. If `AGRIOS_NONBLOCKING` ever silently expanded to nothing,
+`control_tick` would keep compiling cleanly while checking nothing; this file
+turns CI red instead.
+
 ## The real-time control loop (`motor_control_rt_loop.cpp`)
 
 `motor_control_consumer.cpp` (above) is deliberately simple — a poll loop
@@ -152,6 +184,26 @@ top of the same bridge:
   doesn't pay for on-demand dynamic-linker resolution — another possible
   source of first-touch, hard-to-reproduce latency this loop exists to
   eliminate.
+- **One clock read during setup.** `clock_gettime()` runs from the vDSO,
+  which is set up lazily and isn't covered by `mlockall`. Before this warm-up
+  existed, the RT thread's measured page-fault count was exactly 1 on every
+  run, all from the loop's first clock read. It's now 0.
+- **`CpuDmaLatencyGuard`**: `/dev/cpu_dma_latency` held at 0 for the whole
+  run, so the CPU stays out of deep idle states whose exit latency would
+  otherwise land on every wake-up. `cyclictest` does the same by default,
+  which is what makes comparing against it fair. Needs root; if it's
+  unavailable, the run continues and the report records it.
+- **`keep_current_thread_off_core()`**: `main` moves itself off the RT core
+  before creating any thread, so the monitor thread inherits that and never
+  runs where the RT thread needs to wake. The RT thread pins itself onto the
+  core during its own setup.
+- **`--report results.json`**: wake-up latency percentiles (1 µs bins, the
+  resolution `cyclictest` reports), overruns, missed periods, telemetry
+  samples lost, page faults the RT thread took inside the loop, whether the
+  idle-state guard was held, and the kernel (including whether it's
+  PREEMPT_RT). The telemetry ring holds 4096 samples (about 4 s), so a
+  monitor thread starved by heavy load doesn't lose any; any that are lost
+  are counted, not hidden.
 
 ### What was actually verified, and what wasn't
 
@@ -172,8 +224,10 @@ default even to a root user inside the container):
 - **Loop-timing logic: verified.** The absolute-deadline scheduling
   correctly produced the requested iteration count in the expected wall-clock
   time, with no drift accumulation, across a 2,000-iteration (~2 s) run.
-- **Latency/jitter numbers: measured, but not representative of anything
-  beyond this dev machine.** That same run showed a 76 μs average and
+- **Latency/jitter numbers (historical): measured, but not representative
+  of anything beyond this dev machine.** Superseded by the side-by-side
+  `cyclictest` measurement below, kept here as the record of what was
+  measured at the time. That same run showed a 76 μs average and
   450 μs worst-case deadline miss, with 76/2000 iterations over a 200 μs
   overrun threshold. Those numbers are **not** a real-time performance claim
   — they were measured inside Docker Desktop on WSL2, i.e. a container on
@@ -186,6 +240,50 @@ default even to a root user inside the container):
   latency bound. Re-measuring on a real PREEMPT_RT-patched kernel with an
   actually-isolated core is a prerequisite for treating any latency number
   from this loop as meaningful.
+
+## Measuring latency on real hardware
+
+Real-time *safety* (no allocation, locks, blocking, or page faults inside
+the loop) doesn't depend on the machine, and CI verifies it. An absolute
+worst-case latency does: it belongs to a specific machine's kernel,
+firmware, and core isolation. So it's measured per machine, against
+`cyclictest` on that same machine, by one script:
+
+```bash
+cpp/tools/rt_validate.sh --duration 300 --label my-laptop
+```
+
+The script:
+1. Installs `cmake g++ rt-tests stress-ng` if they're missing (Debian/Ubuntu).
+2. Builds the loop.
+3. Starts `stress-ng` on every core, the pinned one included.
+4. Runs `cyclictest` and then the Agrios loop at the same SCHED_FIFO
+   priority (90 by default), period (1 ms), core, and duration.
+5. Writes `results/rt/<label>-<time>/summary.md` with both columns, plus the
+   raw JSON from each.
+
+It reports whether the kernel was PREEMPT_RT, the CPU, the frequency
+governor, and whether any core isolation was configured, so a number is
+never separated from the conditions it was measured under. It exits nonzero
+if the RT thread took a page fault inside its loop.
+
+**Without installing anything:** most laptops and desktops can boot
+LinuxCNC's live USB image. LinuxCNC is a machine-control project, so its
+image ships a PREEMPT_RT kernel and runs entirely from the stick. Write the
+image to a USB drive with balenaEtcher or Rufus, boot from it using the
+firmware's one-time boot menu (F12 on most Dell machines), choose the live
+session (not "Install"), connect to the network, then:
+
+```bash
+sudo apt-get update && sudo apt-get install -y git
+git clone https://github.com/Zautzik/agrios && cd agrios
+cpp/tools/rt_validate.sh --duration 300 --label <machine-name>
+```
+
+Copy `results/rt/` off the machine before rebooting, to a second USB drive
+or by uploading it; a live session keeps nothing. Laptops are a demanding
+real-time target (firmware SMIs, power management), so treat the result as a
+measurement of that machine, not a ceiling for the code.
 
 ## Two channels, and the pose representation
 
