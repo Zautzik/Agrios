@@ -119,7 +119,7 @@ The pose intents flowing into the bridge above come from a LangGraph ReAct-style
 - **`agent` node** — calls the Ollama model (bound to 7 tools) with the running message history.
 - **`tools` node** — executes whichever tool(s) the model requested, returns results as `ToolMessage`s.
 - **Conditional edge** — routes back to `tools` only while the model keeps requesting them; exits to `END` the moment it answers directly.
-- **Checkpointing** — `SqliteSaver` persists graph state per `thread_id` to `checkpoints.db`, so multi-turn memory survives a process restart, not just a single run.
+- **Checkpointing** — graph state is persisted per `thread_id`, so multi-turn memory survives a process restart, not just a single run. It follows `DATABASE_URL`: by default `SqliteSaver` writes to `checkpoints.db`; with a Postgres URL (`DATABASE_URL=postgresql+psycopg://user:pass@host/db`), `PostgresSaver` stores conversations in the same database as the farm data. Switching doesn't copy existing SQLite history across.
 
 ### Demo
 
@@ -209,8 +209,8 @@ cold-start hypothesis that got tested and killed, are in [NOTES.md](NOTES.md).
 - [LangGraph](https://github.com/langchain-ai/langgraph) — agent control flow as an explicit graph
 - [LangChain](https://github.com/langchain-ai/langchain) + [`langchain-ollama`](https://github.com/langchain-ai/langchain) — model/tool binding
 - [Ollama](https://ollama.com/) (`qwen2.5:7b`) — local inference, no API cost or external dependency
-- [SQLAlchemy](https://www.sqlalchemy.org/) — pooled connections over SQLite (`agrios.db`), portable to Postgres
-- `langgraph-checkpoint-sqlite` — conversation persistence (`checkpoints.db`)
+- [SQLAlchemy](https://www.sqlalchemy.org/) — pooled connections over SQLite (`agrios.db`) or Postgres, tested against both in CI
+- `langgraph-checkpoint-sqlite` / `langgraph-checkpoint-postgres` — conversation persistence (`checkpoints.db`, or Postgres)
 - [Langfuse](https://langfuse.com/) (self-hosted) — full tracing/observability
 - [`uv`](https://github.com/astral-sh/uv) — Python dependency management
 - C++20, CMake, POSIX shared memory, `pthread` — the real-time bridge (`cpp/`), Linux/macOS only

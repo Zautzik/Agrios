@@ -310,12 +310,14 @@ walkthrough.
   that call, and any call with an empty required argument, so the model retries with real
   values (6/6 correct in live probes). Two full runs then scored 30/30. The fallow-field case
   passed both times but is still about 50/50 in isolation, so it stays a watch item.
-- **The Postgres swap is tested now, for the domain data.** The schema is SQLAlchemy Core
-  `Table`s, so each dialect emits its own auto-increment, and `DATABASE_URL` picks the
-  database. Against a real Postgres 17, all offline tests pass, the `region` migration works on
-  an old-format database, and a CI job runs the same tests against a Postgres service on every
-  pull request. It took one dev dependency (`psycopg[binary]`) and no code changes. Still on
-  SQLite: the LangGraph checkpointer (`checkpoints.db`), which needs its own Postgres saver.
+- **The Postgres swap is tested now, for the farm data and the conversation history.** The
+  schema is SQLAlchemy Core `Table`s, so each dialect emits its own auto-increment, and
+  `DATABASE_URL` picks the database. The checkpointer follows the same setting:
+  `open_checkpointer()` returns a `PostgresSaver` on the same database for a Postgres URL, and
+  `SqliteSaver` on `checkpoints.db` otherwise. Against a real Postgres 17, all offline tests
+  pass, including a conversation that survives a reconnect, and a CI job runs them on every
+  pull request. Not done: copying existing SQLite history into Postgres, and a live CLI session
+  on Postgres (the tests write checkpoints directly, without the model).
 - **`get_weather_forecast` and `lookup_crop_calendar` return fixture data.** Both are shaped so
   a real API call could replace the body without touching the tool's interface — a deliberate
   seam, not yet used.
@@ -797,9 +799,9 @@ farm-operations data.
 right for two situations this project actually has: the very first prototype (before durability
 mattered at all) and the eval suite (where *not* persisting across runs is the correct
 behavior). `SqliteSaver` adds real durability while staying conceptually simple — still just a
-local file, no new infrastructure. A Postgres-backed checkpointer is the natural next step for
-anything multi-process or multi-user, and — per Part 4 — is a documented open question here,
-not yet attempted, rather than a claim resting on nothing.
+local file, no new infrastructure. A Postgres-backed checkpointer is the step for anything
+multi-process or multi-user. It's now wired in behind `DATABASE_URL` and tested in CI (Part 4),
+though the CLI is still a single-process, single-user loop.
 ### 8.4 — Database access: SQLAlchemy vs. raw `sqlite3`
 Raw `sqlite3` is what the project started with, and it's genuinely simpler for a single SQLite
 file with no portability goal. SQLAlchemy's `engine` + `text()` earns its place here for one
@@ -1044,7 +1046,7 @@ convenient at catching.
 - Getting telemetry out of a latency-critical path without the telemetry itself becoming the
   latency source — *the second lock-free channel pattern, Part 11.5.*
 **The frontiers to grow into**
-- A Postgres-backed checkpointer, now that the domain data runs on Postgres.
+- Multi-user sessions, now that conversation history can live in a shared Postgres.
 - Typed tool outputs (Pydantic models) beyond today's JSON strings.
 - Token streaming to a surface other than the terminal.
 - Multi-user session handling — *a real `thread_id` source instead of a literal.*
