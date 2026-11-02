@@ -77,7 +77,9 @@ def test_tools_return_json(fake_open_meteo):
 def test_weather_for_a_field_uses_its_stored_coordinates(fake_open_meteo):
     weather = json.loads(main.get_weather_forecast.invoke({"location": "Field-1", "days": 2}))
     assert weather["resolved_to"] == "field-1"
-    assert weather["forecast"][1] == {"date": "2026-11-03", "temp_max_c": 18.2, "temp_min_c": -0.5, "rain_mm": 4.2}
+    assert weather["forecast"][1] == {"date": "2026-11-03", "temp_max_c": 18.2, "temp_min_c": -0.5, "rain_mm": 4.2,
+                                      "frost_risk": True}
+    assert weather["forecast"][0]["frost_risk"] is False  # 6.0 °C minimum
     (url, params), = fake_open_meteo  # no geocoding call for a known field
     assert url == main.OPEN_METEO_FORECAST
     assert (params["latitude"], params["longitude"], params["forecast_days"]) == (-34.17, -70.74, 2)
@@ -187,7 +189,8 @@ def test_summarize_folds_old_turns_and_removes_them(monkeypatch):
     assert out["summary"] == "User asked q0-q3; nothing pending."
     removed = [m.id for m in out["messages"]]
     assert removed == [f"{p}{i}" for i in range(4) for p in "hatr"]  # 4 whole turns, oldest first
-    prompt = fake.seen[0][0].content
+    rules, prompt = fake.seen[0][0], fake.seen[0][1].content
+    assert rules.type == "system"
     assert "Earlier: hello." in prompt and "human: q0" in prompt and "q4" not in prompt
 
 

@@ -146,12 +146,14 @@ def summarize_node(state: AgentState) -> dict:
         return {}
     transcript = "\n".join(f"{m.type}: {m.content}" for m in dropped if m.content)
     previous = state.get("summary", "")
-    prompt = (
-        "Update the running summary of a farm-operations chat. Keep facts the user may refer "
-        "back to: fields, crops, tasks logged, decisions, and open questions. Be brief.\n\n"
-        f"Current summary: {previous or '(none)'}\n\nNew messages:\n{transcript}"
+    rules = SystemMessage(
+        "You write the running summary of a farm-operations chat, as notes for the assistant, "
+        "not a reply to the user. Record only what was said: fields, crops, tasks logged, "
+        "decisions, and open questions, as short bullet points. Do not give advice, next steps, "
+        "greetings, or offers of help."
     )
-    summary = summarizer_model.invoke([HumanMessage(prompt)]).content
+    prompt = f"Current summary: {previous or '(none)'}\n\nNew messages:\n{transcript}"
+    summary = summarizer_model.invoke([rules, HumanMessage(prompt)]).content
     logger.info("summarize_node: folded %d messages into the summary", len(dropped))
     return {"summary": summary, "messages": [RemoveMessage(id=m.id) for m in dropped]}
 
@@ -204,8 +206,9 @@ def tool_node(state: AgentState):
 
 @tool
 def get_weather_forecast(location: str, days:int=7) -> str:
-    """Returns the weather forecast (daily temperature and rain) for a
-    field or place over the next N days. location can be a field_id such
+    """Returns the weather forecast (daily temperature, rain, and a
+    frost_risk flag per day) for a field or place over the next N days.
+    location can be a field_id such
     as "field-1" or a place name. Always call this tool for any question
     about weather, forecasts, rain, or frost risk; never answer weather
     from memory."""
@@ -221,8 +224,11 @@ def get_weather_forecast(location: str, days:int=7) -> str:
         })
         resp.raise_for_status()
         daily = resp.json()["daily"]
+        # The model misjudged thresholds on its own (it called 10 °C a frost
+        # risk), so the forecast flags frost-risk days itself.
         forecast = [
-            {"date": d, "temp_max_c": hi, "temp_min_c": lo, "rain_mm": rain}
+            {"date": d, "temp_max_c": hi, "temp_min_c": lo, "rain_mm": rain,
+             "frost_risk": lo is not None and lo <= FROST_RISK_C}
             for d, hi, lo, rain in zip(daily["time"], daily["temperature_2m_max"],
                                        daily["temperature_2m_min"], daily["precipitation_sum"])
         ]
@@ -232,6 +238,9 @@ def get_weather_forecast(location: str, days:int=7) -> str:
         logger.exception("get_weather_forecast failed for %s", location)
         return json.dumps({"error": f"Weather service unavailable for {location!r}: {e}"})
 
+# Air-temperature minimum at or below which a day counts as a frost risk;
+# ground frost can form a couple of degrees above 0 °C air temperature.
+FROST_RISK_C = 2.0
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 
