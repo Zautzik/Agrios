@@ -299,34 +299,31 @@ walkthrough.
 - **The eval suite has now been run and scored — 28/30, one confirmed gap.** See war story #7:
   a reproducible tool-selection miss on the phrasing closest to the weather tool's own docstring
   (`"What's the weather forecast for field-1?"`, 3/3 failures across independent runs), plus one
-  under-sampled recursion-limit flake still being watched rather than fixed. The next honest step
-  isn't running the suite again — it's fixing the one confirmed gap (a sharper docstring, or an
-  explicit "always call this tool, never answer from memory" instruction) and re-verifying the
-  same way it was found: one isolated case at a time, before trusting a full re-run.
-- **The Postgres swap is a documented theory, not a tested fact.** SQLAlchemy makes the
-  connection string the only SQLite-specific line in the file — but nobody has actually pointed
-  the engine at a local Postgres instance to find out whether "one-line swap" holds up, or
-  whether something about connection args, pooling behavior, or SQL dialect differences (e.g.
-  `AUTOINCREMENT` is SQLite-specific; Postgres wants `SERIAL`/`IDENTITY`) turns out to need more.
-  NOTES.md names this as the honest open question it is.
+  under-sampled recursion-limit flake still being watched rather than fixed. The docstring fix
+  is now in: it says `location` can be a `field_id` and that every weather question must call
+  the tool, never be answered from memory. It hasn't been re-verified yet. That still has to
+  happen the same way the gap was found: one isolated case at a time, before trusting a full re-run.
+- **The Postgres swap is closer, but still not a tested fact.** The one dialect problem that
+  was known, `AUTOINCREMENT`, is gone: the schema is now SQLAlchemy Core `Table`s, so each
+  dialect emits its own auto-increment, and an offline test checks the Postgres DDL uses
+  `SERIAL`. The URL comes from `DATABASE_URL`. Nobody has pointed it at a running Postgres yet,
+  and no Postgres driver is a dependency, so pooling and connection behavior are still unknown.
 - **`get_weather_forecast` and `lookup_crop_calendar` return fixture data.** Both are shaped so
   a real API call could replace the body without touching the tool's interface — a deliberate
   seam, not yet used.
-- **One hardcoded `thread_id`, no session handling.** Every conversation in a given run of the
-  CLI shares the string `"1"`. Multi-user support means the `thread_id` has to come from
-  *somewhere real* (a login, a session cookie, a CLI flag) instead of a literal.
-- **"Streaming" today means the transport, not the output.** `ChatOllama` talks to the Ollama
-  server over a streaming HTTP connection internally — that's the code path implicated in war
-  story #2 — but `app.invoke()` still blocks until the full response is assembled, and the CLI
-  prints once at the end. A user-facing token-by-token stream (the actual UX win Agroteca's
-  Part 3 documents) hasn't been built here.
-- **Tool outputs are strings, not structured data.** Every tool returns an f-string or
-  `str(tuple(...))`/`str([...])` — which means the model has to *parse text back out of text*
-  to use a result. A typed return (a small `dict`/Pydantic model, JSON-serialized) would remove
-  that lossy round-trip.
+- **No session handling beyond a CLI flag.** `--thread` picks the `thread_id` (default `"1"`).
+  Multi-user support still needs it to come from a login or session, not the command line.
+- **Token streaming is written but not yet watched running.** The CLI now uses
+  `app.stream(..., stream_mode="messages")` and prints the agent node's tokens as they arrive,
+  instead of `app.invoke()` and one print at the end. It hasn't been run against a live Ollama
+  since the change.
+- **Farm tool outputs are JSON now.** The five farm tools return `json.dumps(...)` instead of
+  f-strings and `str(tuple(...))`, which also fixes invalid output when an argument contained a
+  quote. The two spatial tools still return plain status sentences.
 - **No concurrency story.** Single process, single thread, one blocking `input()` loop. Serving
   more than one user at once is a different architecture, not a tuning knob.
-- **The eval suite hasn't been re-run since the tool count changed.** Wiring `submit_spatial_intent`
+- **The eval suite hasn't been re-run since the tool count changed** (nor since the docstring
+  fix and the JSON outputs). Wiring `submit_spatial_intent`
   and `read_joint_states` into `main.py` took the model from 5 tools to choose from up to 7. The
   30-case suite's 28/30 result predates that change — nothing has confirmed the extra two tools
   leave the original five's selection behavior unaffected, only that they don't crash anything at

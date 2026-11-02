@@ -281,7 +281,7 @@ session (not "Install"), connect to the network, then:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git
-git clone https://github.com/Zautzik/agrios && cd agrios
+git clone https://github.com/Zautzik/Agrios && cd Agrios
 cpp/tools/rt_validate.sh --duration 300 --label <machine-name>
 ```
 

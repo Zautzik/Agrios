@@ -6,16 +6,19 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, START
 from langgraph.graph import END
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, AIMessageChunk, trim_messages
 from typing import TypedDict, Annotated
 from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
 from langfuse.langchain import CallbackHandler
 from langgraph.errors import GraphRecursionError
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, func, insert, MetaData, Table, Column, Integer, Text
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.exc import SQLAlchemyError
+import argparse
+import json
 import logging
+import os
 from pathlib import Path
 
 from spatial_tools import submit_spatial_intent, read_joint_states
@@ -25,29 +28,39 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).parent
-engine = create_engine(f"sqlite:///{BASE_DIR}/agrios.db", poolclass=QueuePool, pool_size=5, max_overflow=10)
+# DATABASE_URL lets the same code run against Postgres (e.g.
+# postgresql+psycopg://user:pass@localhost/agrios); SQLite is the default.
+DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{BASE_DIR}/agrios.db")
+engine = create_engine(DATABASE_URL, poolclass=QueuePool, pool_size=5, max_overflow=10)
+
+# Schema as SQLAlchemy Core tables rather than raw DDL, so each dialect emits
+# its own auto-increment (SQLite: INTEGER PRIMARY KEY, Postgres: SERIAL).
+metadata = MetaData()
+fields_table = Table(
+    "fields", metadata,
+    Column("field_id", Text, primary_key=True),
+    Column("crop", Text),
+    Column("status", Text),
+)
+tasks_table = Table(
+    "tasks", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("field_id", Text),
+    Column("description", Text),
+    Column("status", Text, server_default="pending"),
+)
+
+# Only the most recent turns are sent to the model; the full history stays in
+# the checkpoint. Without this, every turn replays the whole thread.
+MAX_HISTORY_MESSAGES = 20
 
 def init_db():
+    metadata.create_all(engine)
     with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS fields (
-                field_id TEXT PRIMARY KEY,
-                crop TEXT,
-                status TEXT
-            )
-        """))
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                field_id TEXT,
-                description TEXT,
-                status TEXT DEFAULT 'pending'
-            )
-        """))
-        count = conn.execute(text("SELECT COUNT(*) FROM fields")).scalar()
+        count = conn.execute(select(func.count()).select_from(fields_table)).scalar()
         if count == 0:
             conn.execute(
-                text("INSERT INTO fields (field_id, crop, status) VALUES (:field_id, :crop, :status)"),
+                insert(fields_table),
                 [
                     {"field_id": "field-1", "crop": "potato", "status": "growing"},
                     {"field_id": "field-2", "crop": "wheat", "status": "fallow"},
@@ -58,7 +71,14 @@ class AgentState(TypedDict):
 
 def agent_node(state: AgentState) -> dict:
     logger.info("agent_node: %d messages in", len(state["messages"]))
-    response = model_with_tools.invoke(state["messages"])
+    history = trim_messages(
+        state["messages"],
+        token_counter=len,
+        max_tokens=MAX_HISTORY_MESSAGES,
+        strategy="last",
+        start_on="human",
+    )
+    response = model_with_tools.invoke(history)
     logger.info("agent_node: tool_calls=%s", bool(response.tool_calls))
     return {"messages": [response]}
 
@@ -85,16 +105,18 @@ def tool_node(state: AgentState):
 
 @tool
 def get_weather_forecast(location: str, days:int=7) -> str:
-    """Returns the daily weather forecast for a farm location over the
-    next N days. Use when the user asks about planting, irrigation,
-    frost risk, or any weather-dependent timing."""
-    return '{"location": "%s", "forecast": [{"day": 1, "temp_c": 14, "rain_mm": 2}, {"day": 2, "temp_c": 11, "rain_mm": 8}]}' % location
+    """Returns the weather forecast (daily temperature and rain) for a
+    field or place over the next N days. location can be a field_id such
+    as "field-1" or a place name. Always call this tool for any question
+    about weather, forecasts, rain, or frost risk; never answer weather
+    from memory."""
+    return json.dumps({"location": location, "forecast": [{"day": 1, "temp_c": 14, "rain_mm": 2}, {"day": 2, "temp_c": 11, "rain_mm": 8}]})
 
 @tool
 def lookup_crop_calendar(crop: str, region: str) -> str:
     """Returns planting and harvest windows for a crop in a given region.
     Use when the user asks when to plant or harvest a specific crop."""
-    return '{"crop": "%s", "region": "%s", "planting_window": {"start": "2024-04-01", "end": "2024-05-15"}, "harvest_window": {"start": "2024-09-01", "end": "2024-10-15"}}' % (crop, region)
+    return json.dumps({"crop": crop, "region": region, "planting_window": {"start": "2024-04-01", "end": "2024-05-15"}, "harvest_window": {"start": "2024-09-01", "end": "2024-10-15"}})
 
 @tool
 def query_field_status(field_id: str) -> str:
@@ -103,13 +125,14 @@ the format "field-<n>", e.g. "field-1" or "field-2"."""
     try:
         with engine.connect() as conn:
             row = conn.execute(
-                text("SELECT field_id, crop, status FROM fields WHERE field_id = :field_id"),
-                {"field_id": field_id}
-            ).fetchone()
-        return str(tuple(row)) if row else f"No field found with id {field_id}"
+                select(fields_table).where(fields_table.c.field_id == field_id)
+            ).mappings().fetchone()
+        if row is None:
+            return json.dumps({"error": f"No field found with id {field_id}"})
+        return json.dumps(dict(row))
     except SQLAlchemyError as e:
         logger.exception("query_field_status failed for %s", field_id)
-        return f"Error looking up field {field_id}: {e}"
+        return json.dumps({"error": f"Error looking up field {field_id}: {e}"})
 
 
 @tool
@@ -120,13 +143,12 @@ the format "field-<n>", e.g. "field-1" or "field-2"."""
     try:
         with engine.begin() as conn:
             conn.execute(
-                text("INSERT INTO tasks (field_id, description, status) VALUES (:field_id, :description, 'pending')"),
-                {"field_id": field_id, "description": description}
+                insert(tasks_table).values(field_id=field_id, description=description, status="pending")
             )
-        return f"Logged task for {field_id}: {description}"
+        return json.dumps({"logged": True, "field_id": field_id, "description": description})
     except SQLAlchemyError as e:
         logger.exception("log_task failed for %s", field_id)
-        return f"Error logging task for {field_id}: {e}"
+        return json.dumps({"error": f"Error logging task for {field_id}: {e}"})
 
 @tool
 def get_pending_tasks() -> str:
@@ -134,15 +156,15 @@ def get_pending_tasks() -> str:
     try:
         with engine.connect() as conn:
             rows = conn.execute(
-                text("SELECT field_id, description FROM tasks WHERE status = 'pending'")
-            ).fetchall()
-        return str([tuple(r) for r in rows])
+                select(tasks_table.c.field_id, tasks_table.c.description)
+                .where(tasks_table.c.status == "pending")
+            ).mappings().fetchall()
+        return json.dumps([dict(r) for r in rows])
     except SQLAlchemyError as e:
         logger.exception("get_pending_tasks failed")
-        return f"Error retrieving pending tasks: {e}"
+        return json.dumps({"error": f"Error retrieving pending tasks: {e}"})
 
 model = ChatOllama(model="qwen2.5:7b")
-config = {"configurable": {"thread_id": "1"}}
 langfuse_handler = CallbackHandler()
 tools = [get_weather_forecast, lookup_crop_calendar, query_field_status, log_task, get_pending_tasks,
          submit_spatial_intent, read_joint_states]
@@ -157,6 +179,12 @@ graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: EN
 graph.add_edge("tools", "agent")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Agrios farm-ops agent CLI")
+    parser.add_argument("--thread", default="1",
+                        help="conversation thread id; each id keeps its own history (default: 1)")
+    args = parser.parse_args()
+    config = {"configurable": {"thread_id": args.thread}}
+
     with SqliteSaver.from_conn_string(str(BASE_DIR / "checkpoints.db")) as memory:
         app = graph.compile(checkpointer=memory)
         while True:
@@ -164,11 +192,17 @@ if __name__ == "__main__":
             if user_input.lower() == "exit":
                 break
             try:
-                result = app.invoke(
+                # stream_mode="messages" yields the model's tokens as they are
+                # generated; only the agent node's text is user-facing.
+                for chunk, meta in app.stream(
                     {"messages": [("user", user_input)]},
-                    config={**config, "callbacks": [langfuse_handler], "recursion_limit": 10}
-                )
-                print(result["messages"][-1].content)
+                    config={**config, "callbacks": [langfuse_handler], "recursion_limit": 10},
+                    stream_mode="messages",
+                ):
+                    if (isinstance(chunk, AIMessageChunk) and meta.get("langgraph_node") == "agent"
+                            and isinstance(chunk.content, str)):
+                        print(chunk.content, end="", flush=True)
+                print()
             except GraphRecursionError:
                 logger.error("Hit recursion limit (10) for thread %s", config["configurable"]["thread_id"])
                 print("Sorry, I got stuck looping on that one — try rephrasing your request.")
