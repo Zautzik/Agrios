@@ -171,25 +171,27 @@ across four categories: tool selection (15 cases), argument correctness (8), mul
 completion (5), and no-tool-needed (2). It's gated behind a marker so a plain `pytest` run stays
 fast and never touches Ollama; the full suite takes ~25 minutes on CPU against `qwen2.5:7b`.
 
-**Reconciled result** (original run + one test-bug fix, not a single re-run): **28/30 cases
-correct.**
-- 1 confirmed, reproducible gap: the literal phrasing *"What's the weather forecast for
-  field-1?"* — wording closest to the tool's own docstring — doesn't trigger
-  `get_weather_forecast` (3/3 across independent isolated runs), while paraphrases of the same
-  request reliably do. A fix is in (the docstring now says `location` can be a `field_id` and
-  that every weather question must call the tool), but it hasn't been re-verified against the
-  live model yet.
-- 1 open question: a single recursion-limit hit on a frost-risk question didn't reproduce on
-  retry (1 fail, 1 pass across everything actually run) — too little data to call it resolved or
-  call it a bug, so it's a watch item.
+**Latest result: 29/30**, one full run with all 7 tools, JSON tool outputs and the weather
+docstring fix (14m 53s on CPU).
+- **Weather gap: closed.** *"What's the weather forecast for field-1?"* used to fail 3/3. With
+  the docstring saying `location` can be a `field_id` and that every weather question must call
+  the tool, it passed 3/3 in isolated runs and again in the full run.
+- **New flaky case: a fallow field skips the crop calendar.** *"What's in field-2 and when
+  should I harvest per the crop calendar"* calls `query_field_status` every time, but
+  `lookup_crop_calendar` only about 60% of the time (5 of 8 isolated runs). The same question
+  about field-1, which is growing potatoes, called both tools 5/5, so the trigger looks like
+  field-2 being fallow. Skipping the calendar for an empty field is defensible; one skipped run
+  still answered *"according to the crop calendar…"* without having called it, which isn't. A
+  stronger docstring ("always call this tool…") made no measurable difference (3/5), so it
+  wasn't kept.
+- **Invented arguments.** Fields have no region, so the model makes one up ("Midwest USA",
+  "generic-region"), and once passed `corn` for the potato field. The fixture ignores both, so
+  no test fails, but a real calendar API would return wrong answers.
+- **Recursion-limit flake on the frost question:** didn't recur in this run. Still too little
+  data to call it resolved.
 
-See [NOTES.md](NOTES.md) for the full investigation, including a hypothesis (cold-start effect)
-that got tested and killed before either finding was written down.
-
-Note: adding `submit_spatial_intent`/`read_joint_states` gave the model 7 tools instead of 5 to
-choose from; the eval suite above has not been re-run since (nor since the weather docstring fix and the
-switch to JSON tool outputs), so it doesn't yet confirm the new
-tools left the other 5's selection behavior unaffected.
+The earlier 28/30 (5 tools, before these fixes) and the investigation behind it, including a
+cold-start hypothesis that got tested and killed, are in [NOTES.md](NOTES.md).
 
 ## Stack
 

@@ -13,7 +13,8 @@
 > `main.py`, `test_agent.py`, `cpp/`, `spatial_tools.py`, or a specific commit — nothing here is
 > invented, and nowhere does this document claim a measured result the project doesn't actually
 > have. The eval suite has been run for real: 28/30 on reconciliation, one confirmed reproducible
-> gap, one open question — see war story #7 in Part 3. The bridge has been verified for real
+> gap, one open question — see war story #7 in Part 3. The latest run, with all seven tools and
+> the weather fix, scored 29/30 (see Part 4). The bridge has been verified for real
 > too, including two rounds of adversarial audit that each found genuine bugs and each correctly
 > refused at least one demanded "fix" that would have been a regression — see war stories #13
 > and #14, and Part 11 in full.
@@ -106,8 +107,8 @@ Every phase below is one real commit — this is the actual build order, not a r
 **Current state, stated plainly:** two systems in one repo. The Python side: a single-file
 (~175-line) CLI agent, seven tools (three DB-backed, two fixture data, two crossing into the C++
 bridge), one hardcoded `thread_id`, local-only inference, traced through a self-hosted Langfuse
-stack, checked by a 30-case suite scored at 28/30 on reconciliation (not re-run since the tool
-count changed from five to seven — see Part 4). The C++ side: a lock-free SPSC ring buffer proven
+stack, checked by a 30-case suite now scoring 29/30 with all seven tools (28/30 before the
+weather fix — see Part 4). The C++ side: a lock-free SPSC ring buffer proven
 correct under a 5,000,000-operation concurrent stress test, two independent shared-memory
 channels, a real-time thread hardened to PREEMPT_RT/ROS 2 discipline and verified live against a
 real Python tool call — with an explicit, written-down account of exactly which parts of that
@@ -296,13 +297,15 @@ walkthrough.
 ---
 ## Part 4 — What's left (the honest roadmap)
 **Not yet true, named plainly rather than implied:**
-- **The eval suite has now been run and scored — 28/30, one confirmed gap.** See war story #7:
-  a reproducible tool-selection miss on the phrasing closest to the weather tool's own docstring
-  (`"What's the weather forecast for field-1?"`, 3/3 failures across independent runs), plus one
-  under-sampled recursion-limit flake still being watched rather than fixed. The docstring fix
-  is now in: it says `location` can be a `field_id` and that every weather question must call
-  the tool, never be answered from memory. It hasn't been re-verified yet. That still has to
-  happen the same way the gap was found: one isolated case at a time, before trusting a full re-run.
+- **The weather gap is closed; a new flaky case replaced it (29/30).** War story #7's miss
+  (`"What's the weather forecast for field-1?"`, 3/3 failures) passed 3/3 in isolated runs after
+  the docstring fix, then again in a full run with all seven tools. The one failure in that run
+  is new: asked what's in field-2 *and* when to harvest per the crop calendar, the model calls
+  the calendar only about 60% of the time. Field-2 is fallow; the same question about field-1
+  calls both tools 5/5. One skipped run still claimed to quote the calendar, which is the real
+  bug. A stronger docstring didn't move the rate, so the likely fix is data, not wording. Fields
+  have no region, so the model also invents one for every calendar call, and once passed the
+  wrong crop. Giving `fields` a `region` column is the next step for both.
 - **The Postgres swap is closer, but still not a tested fact.** The one dialect problem that
   was known, `AUTOINCREMENT`, is gone: the schema is now SQLAlchemy Core `Table`s, so each
   dialect emits its own auto-increment, and an offline test checks the Postgres DDL uses
@@ -313,21 +316,14 @@ walkthrough.
   seam, not yet used.
 - **No session handling beyond a CLI flag.** `--thread` picks the `thread_id` (default `"1"`).
   Multi-user support still needs it to come from a login or session, not the command line.
-- **Token streaming is written but not yet watched running.** The CLI now uses
-  `app.stream(..., stream_mode="messages")` and prints the agent node's tokens as they arrive,
-  instead of `app.invoke()` and one print at the end. It hasn't been run against a live Ollama
-  since the change.
+- **Token streaming works.** The CLI uses `app.stream(..., stream_mode="messages")` and prints
+  the agent node's tokens as they arrive. Verified against the live model on a tool-calling
+  question: a log line landed mid-answer, which only happens when the answer prints in pieces.
 - **Farm tool outputs are JSON now.** The five farm tools return `json.dumps(...)` instead of
   f-strings and `str(tuple(...))`, which also fixes invalid output when an argument contained a
   quote. The two spatial tools still return plain status sentences.
 - **No concurrency story.** Single process, single thread, one blocking `input()` loop. Serving
   more than one user at once is a different architecture, not a tuning knob.
-- **The eval suite hasn't been re-run since the tool count changed** (nor since the docstring
-  fix and the JSON outputs). Wiring `submit_spatial_intent`
-  and `read_joint_states` into `main.py` took the model from 5 tools to choose from up to 7. The
-  30-case suite's 28/30 result predates that change — nothing has confirmed the extra two tools
-  leave the original five's selection behavior unaffected, only that they don't crash anything at
-  import time.
 - **No PREEMPT_RT kernel has ever run this code.** Every real-time verification (Part 11) — the
   5M-item stress test, the SCHED_FIFO/mlockall success path, the failure path when privileges are
   withheld — ran inside Docker Desktop on WSL2: a stock, non-PREEMPT_RT-patched kernel, itself
