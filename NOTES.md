@@ -174,3 +174,17 @@ Closing out the agent-side gaps, offline only. No Ollama, Docker, or Postgres wa
 **What's verified.** `test_offline.py` (in CI, no model needed) checks the JSON outputs, including a quote in an argument, that the tasks table compiles to `SERIAL` for Postgres, and that trimming never starts mid tool exchange. A `conftest.py` points tests at a throwaway SQLite file, so they no longer write to the CLI's `agrios.db`. The new code also read the existing `agrios.db` without a migration.
 
 **What isn't.** Whether the docstring fix actually closes the weather gap, what the eval suite scores with 7 tools and JSON outputs, the streaming output in a real terminal, and a run against a live Postgres. Langfuse wasn't touched: the SDK (4.12.0) posts to `/api/public/otel/v1/traces`, and the server source has that route, so the 404 most likely comes from an older Docker image than the source. That's a guess until the image is pulled and `/api/public/health` reports its version.
+
+---
+
+Re-ran the eval suite live: 29/30, with all seven tools, JSON tool outputs and the weather docstring fix (`qwen2.5:7b`, 14m 53s, ~780 MB of free RAM on this machine).
+
+**The weather fix holds.** Run the way the gap was found, one isolated case at a time: 3/3 passes, against 3/3 failures before. It passed again in the full run. The two new tools didn't break any of the original 28 cases.
+
+**The one failure is new, and it's flaky rather than consistent.** "What's in field-2 and when should I harvest per the crop calendar" called `query_field_status` every time but `lookup_crop_calendar` in 5 of 8 isolated runs (2/3, then 3/5). Hypothesis: field-2 is fallow, so the model decides there's nothing to harvest. Test: the same question about field-1, which is growing potatoes, called both tools 5/5. That supports it. Skipping the calendar for an empty field is arguably right. What isn't right is one skipped run answering "according to the crop calendar for wheat in this region…" without having called it, the same faithfulness gap the eval suite can't see, because it checks which tools were called, not whether the answer stays true to them.
+
+**A wording fix was tried and dropped.** Adding "always call this tool for any question about when to plant or harvest" to the calendar docstring gave 3/5, no better than before, so it was reverted. Unlike the weather miss, this one doesn't look like a wording problem.
+
+**The probe runs surfaced something the suite misses: invented arguments.** Fields have no region, so every calendar call gets a made-up one ("Midwest USA", "Midwestern USA", "generic-region"). One run passed `corn` for the potato field. The fixture returns the same windows whatever it's given, so nothing fails today, but a real calendar API would return confidently wrong dates. A `region` column on `fields` would give the model a real value to pass, and probably helps the fallow case too.
+
+**Streaming verified live.** One tool-calling turn through `main.py --thread stream-check`: the answer printed correctly, and in one run an OpenTelemetry error landed mid-answer, which only happens when it prints in pieces. Tracing still fails (`Failed to export span batch due to timeout`); Docker wasn't running, so that's expected and still open.
