@@ -12,7 +12,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
 from langfuse.langchain import CallbackHandler
 from langgraph.errors import GraphRecursionError
-from sqlalchemy import create_engine, select, func, insert, MetaData, Table, Column, Integer, Text
+from sqlalchemy import create_engine, select, func, insert, update, inspect, text, MetaData, Table, Column, Integer, Text
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.exc import SQLAlchemyError
 import argparse
@@ -41,6 +41,7 @@ fields_table = Table(
     Column("field_id", Text, primary_key=True),
     Column("crop", Text),
     Column("status", Text),
+    Column("region", Text),
 )
 tasks_table = Table(
     "tasks", metadata,
@@ -54,18 +55,28 @@ tasks_table = Table(
 # the checkpoint. Without this, every turn replays the whole thread.
 MAX_HISTORY_MESSAGES = 20
 
-def init_db():
-    metadata.create_all(engine)
-    with engine.begin() as conn:
+SEED_FIELDS = [
+    {"field_id": "field-1", "crop": "potato", "status": "growing", "region": "central Chile"},
+    {"field_id": "field-2", "crop": "wheat", "status": "fallow", "region": "central Chile"},
+]
+
+def init_db(db_engine=engine):
+    metadata.create_all(db_engine)
+    with db_engine.begin() as conn:
+        # create_all doesn't alter existing tables: databases made before the
+        # region column existed get it added here, and the seed rows backfilled.
+        columns = {c["name"] for c in inspect(conn).get_columns("fields")}
+        if "region" not in columns:
+            conn.execute(text("ALTER TABLE fields ADD COLUMN region TEXT"))
+            for row in SEED_FIELDS:
+                conn.execute(
+                    update(fields_table)
+                    .where(fields_table.c.field_id == row["field_id"], fields_table.c.region.is_(None))
+                    .values(region=row["region"])
+                )
         count = conn.execute(select(func.count()).select_from(fields_table)).scalar()
         if count == 0:
-            conn.execute(
-                insert(fields_table),
-                [
-                    {"field_id": "field-1", "crop": "potato", "status": "growing"},
-                    {"field_id": "field-2", "crop": "wheat", "status": "fallow"},
-                ]
-            )
+            conn.execute(insert(fields_table), SEED_FIELDS)
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
@@ -120,7 +131,7 @@ def lookup_crop_calendar(crop: str, region: str) -> str:
 
 @tool
 def query_field_status(field_id: str) -> str:
-    """Returns the crop and status for a given field_id. field_id must match
+    """Returns the crop, status and region for a given field_id. field_id must match
 the format "field-<n>", e.g. "field-1" or "field-2"."""
     try:
         with engine.connect() as conn:
