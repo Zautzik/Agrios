@@ -12,10 +12,11 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
 from langfuse.langchain import CallbackHandler
 from langgraph.errors import GraphRecursionError
-from sqlalchemy import create_engine, select, func, insert, update, inspect, text, MetaData, Table, Column, Integer, Text
+from sqlalchemy import create_engine, make_url, select, func, insert, update, inspect, text, MetaData, Table, Column, Integer, Text
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.exc import SQLAlchemyError
 import argparse
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -32,6 +33,22 @@ BASE_DIR = Path(__file__).parent
 # postgresql+psycopg://user:pass@localhost/agrios); SQLite is the default.
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{BASE_DIR}/agrios.db")
 engine = create_engine(DATABASE_URL, poolclass=QueuePool, pool_size=5, max_overflow=10)
+
+@contextmanager
+def open_checkpointer(database_url: str = DATABASE_URL, sqlite_path: Path = BASE_DIR / "checkpoints.db"):
+    """Conversation history follows DATABASE_URL: on Postgres it lives in the
+    same database as the farm data; otherwise in its own SQLite file."""
+    url = make_url(database_url)
+    if url.get_backend_name() == "postgresql":
+        from langgraph.checkpoint.postgres import PostgresSaver
+        # PostgresSaver takes a plain libpq URL, without SQLAlchemy's "+driver".
+        conn_string = url.set(drivername="postgresql").render_as_string(hide_password=False)
+        with PostgresSaver.from_conn_string(conn_string) as saver:
+            saver.setup()  # creates or migrates its tables; safe to repeat
+            yield saver
+    else:
+        with SqliteSaver.from_conn_string(str(sqlite_path)) as saver:
+            yield saver
 
 # Schema as SQLAlchemy Core tables rather than raw DDL, so each dialect emits
 # its own auto-increment (SQLite: INTEGER PRIMARY KEY, Postgres: SERIAL).
@@ -228,7 +245,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     config = {"configurable": {"thread_id": args.thread}}
 
-    with SqliteSaver.from_conn_string(str(BASE_DIR / "checkpoints.db")) as memory:
+    with open_checkpointer() as memory:
         app = graph.compile(checkpointer=memory)
         while True:
             user_input = input("You: ")

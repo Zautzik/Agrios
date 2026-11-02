@@ -1,7 +1,9 @@
 """Fast tests that need no live model: tool output shape, schema portability,
-and history trimming. Run by a plain `pytest`."""
+history trimming and checkpointing. Run by a plain `pytest`."""
 import json
+import uuid
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, trim_messages
 from sqlalchemy import create_engine, text
 from sqlalchemy.dialects import postgresql, sqlite
@@ -49,6 +51,34 @@ def test_init_db_adds_region_to_a_pre_region_database(tmp_path):
     with db.connect() as conn:
         rows = dict(conn.execute(text("SELECT field_id, region FROM fields")).fetchall())
     assert rows == {"field-1": "central Chile", "field-7": None}  # only seed rows are backfilled
+
+
+def _round_trip_history(checkpointer):
+    thread = {"configurable": {"thread_id": f"test-{uuid.uuid4()}"}}
+    app = main.graph.compile(checkpointer=checkpointer)
+    # update_state writes a checkpoint without running any node, so no model is needed.
+    app.update_state(thread, {"messages": [HumanMessage("remember me"), AIMessage("noted")]}, as_node="agent")
+    return [m.content for m in app.get_state(thread).values["messages"]]
+
+
+def test_sqlite_checkpointer_keeps_history(tmp_path):
+    url = f"sqlite:///{tmp_path / 'agrios.db'}"
+    with main.open_checkpointer(url, tmp_path / "checkpoints.db") as saver:
+        assert type(saver).__name__ == "SqliteSaver"
+        assert _round_trip_history(saver) == ["remember me", "noted"]
+
+
+@pytest.mark.skipif(not main.DATABASE_URL.startswith("postgresql"), reason="DATABASE_URL is not Postgres")
+def test_postgres_checkpointer_keeps_history_across_connections():
+    thread = {"configurable": {"thread_id": f"test-{uuid.uuid4()}"}}
+    with main.open_checkpointer() as saver:
+        assert type(saver).__name__ == "PostgresSaver"
+        main.graph.compile(checkpointer=saver).update_state(
+            thread, {"messages": [HumanMessage("remember me"), AIMessage("noted")]}, as_node="agent")
+    # A fresh connection, as after a CLI restart, must see the same thread.
+    with main.open_checkpointer() as saver:
+        messages = main.graph.compile(checkpointer=saver).get_state(thread).values["messages"]
+    assert [m.content for m in messages] == ["remember me", "noted"]
 
 
 def _run_tool_turn(*calls):
