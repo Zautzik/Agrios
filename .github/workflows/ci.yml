@@ -26,6 +26,9 @@ jobs:
       - name: Import check
         run: uv run python -c "import main"
 
+      - name: Offline tests (tool output, schema, history trimming)
+        run: uv run pytest -q
+
       - name: Collect eval suite (no live model required)
         run: uv run pytest --collect-only -m slow -q
 
