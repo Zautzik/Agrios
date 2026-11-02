@@ -188,3 +188,17 @@ Re-ran the eval suite live: 29/30, with all seven tools, JSON tool outputs and t
 **The probe runs surfaced something the suite misses: invented arguments.** Fields have no region, so every calendar call gets a made-up one ("Midwest USA", "Midwestern USA", "generic-region"). One run passed `corn` for the potato field. The fixture returns the same windows whatever it's given, so nothing fails today, but a real calendar API would return confidently wrong dates. A `region` column on `fields` would give the model a real value to pass, and probably helps the fallow case too.
 
 **Streaming verified live.** One tool-calling turn through `main.py --thread stream-check`: the answer printed correctly, and in one run an OpenTelemetry error landed mid-answer, which only happens when it prints in pieces. Tracing still fails (`Failed to export span batch due to timeout`); Docker wasn't running, so that's expected and still open.
+
+---
+
+Two fixes for the invented calendar arguments, each checked live against `qwen2.5:7b` and then with a full eval. Both full runs scored 30/30.
+
+**A `region` column on `fields`.** Both seed fields are `central Chile`, `query_field_status` returns the region, and `init_db` adds the column to older databases and backfills only the seed rows. On "What's in field-1 and when should I harvest per the crop calendar", 4/5 runs passed `potato`/`central Chile`, against 0/5 real regions before. Full eval: 30/30 (22m 07s).
+
+**What it didn't fix, and why.** Recording tool calls per model turn showed the pattern behind the misses. When the model called `query_field_status`, waited, then called the calendar, its arguments were right every time. When it called both in the same turn, it hadn't seen the field yet and guessed (`wheat`/`Midwest USA`, or empty strings). The fallow field-2 case didn't move either: 4/8 calendar calls, against 5/8 before.
+
+**A docstring fix, tried and reverted.** Adding "for a question about a field, pass the crop and region that query_field_status returned" to the calendar docstring made the full eval fail on "When can I harvest the potatoes I'm growing?". Isolated, that case fell to 1/5 tool calls with the new wording, against 4/5 with the old. The model had stopped guessing, but it asked the user for a region instead of looking up the field. Fixing one failure by causing another isn't a fix, so it went.
+
+**A guard in the tool step.** `tool_node` now refuses three kinds of call: a calendar call made in the same turn as `query_field_status`, any call with an empty required argument, and an unknown tool name (which used to raise `KeyError`). Each refused call still gets a `ToolMessage` saying why, so the model can retry on its next turn. Live, on the field-1 question: 6/6 runs ended with the correct `potato`/`central Chile` call. Two of them made a same-turn guess (`wheat`/`midwest`, `unknown`/`unknown`), which the guard refused, and the model retried with the real values. Full eval: 30/30 (17m 32s).
+
+**Limits.** The guard only catches the same-turn pattern and empty values. A calendar call made on its own turn with a confident wrong value (`"unknown"`, or a made-up region when no field was named) still runs. The fallow-field case passed in both 30/30 runs but is about 50/50 in isolation, so those scores include some luck on that case.

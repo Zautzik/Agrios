@@ -171,8 +171,9 @@ across four categories: tool selection (15 cases), argument correctness (8), mul
 completion (5), and no-tool-needed (2). It's gated behind a marker so a plain `pytest` run stays
 fast and never touches Ollama; the full suite takes ~25 minutes on CPU against `qwen2.5:7b`.
 
-**Latest result: 29/30**, one full run with all 7 tools, JSON tool outputs and the weather
-docstring fix (14m 53s on CPU).
+**Latest result: 30/30**, in two separate full runs: one after adding a `region` column to
+`fields` (22m 07s on CPU), and one after adding the tool-call guard below (17m 32s). The run
+before both scored 29/30.
 - **Weather gap: closed.** *"What's the weather forecast for field-1?"* used to fail 3/3. With
   the docstring saying `location` can be a `field_id` and that every weather question must call
   the tool, it passed 3/3 in isolated runs and again in the full run.
@@ -183,10 +184,20 @@ docstring fix (14m 53s on CPU).
   field-2 being fallow. Skipping the calendar for an empty field is defensible; one skipped run
   still answered *"according to the crop calendar…"* without having called it, which isn't. A
   stronger docstring ("always call this tool…") made no measurable difference (3/5), so it
-  wasn't kept.
-- **Invented arguments.** Fields have no region, so the model makes one up ("Midwest USA",
-  "generic-region"), and once passed `corn` for the potato field. The fixture ignores both, so
-  no test fails, but a real calendar API would return wrong answers.
+  wasn't kept. This case passed in both 30/30 runs but is still flaky in isolation (4/8 with the
+  region column), so the 30/30 partly reflects luck on this one case.
+- **Invented arguments: fixed in two steps.** Fields had no region, so the model made one up
+  ("Midwest USA", "generic-region"). With a `region` column that `query_field_status` returns,
+  4/5 runs on the field-1 question passed the real `potato`/`central Chile` (0/5 before). The
+  miss came from the model calling both tools *in the same turn*, before it had the field's
+  data, and guessing. A guard in the tool step now refuses a calendar call made alongside
+  `query_field_status`, and any call with an empty required argument, replying with why so the
+  model can retry. With the guard: 6/6 runs ended on the correct call, including 2 where it
+  caught a same-turn guess and the model retried with the real values. The guard can't catch a
+  confident wrong value in a call made on its own (e.g. `"unknown"` as a region).
+- **Tried and dropped:** telling the model in the calendar docstring to take the region from
+  `query_field_status`. It stopped guessing, but asked the user instead of looking the field up:
+  *"When can I harvest the potatoes I'm growing?"* fell to 1/5 tool calls.
 - **Recursion-limit flake on the frost question:** didn't recur in this run. Still too little
   data to call it resolved.
 

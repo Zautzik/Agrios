@@ -14,7 +14,7 @@
 > invented, and nowhere does this document claim a measured result the project doesn't actually
 > have. The eval suite has been run for real: 28/30 on reconciliation, one confirmed reproducible
 > gap, one open question — see war story #7 in Part 3. The latest run, with all seven tools and
-> the weather fix, scored 29/30 (see Part 4). The bridge has been verified for real
+> the weather fix, the `region` column and the tool-call guard, scored 30/30 twice (see Part 4). The bridge has been verified for real
 > too, including two rounds of adversarial audit that each found genuine bugs and each correctly
 > refused at least one demanded "fix" that would have been a regression — see war stories #13
 > and #14, and Part 11 in full.
@@ -107,7 +107,7 @@ Every phase below is one real commit — this is the actual build order, not a r
 **Current state, stated plainly:** two systems in one repo. The Python side: a single-file
 (~175-line) CLI agent, seven tools (three DB-backed, two fixture data, two crossing into the C++
 bridge), one hardcoded `thread_id`, local-only inference, traced through a self-hosted Langfuse
-stack, checked by a 30-case suite now scoring 29/30 with all seven tools (28/30 before the
+stack, checked by a 30-case suite now scoring 30/30 with all seven tools (28/30 before the
 weather fix — see Part 4). The C++ side: a lock-free SPSC ring buffer proven
 correct under a 5,000,000-operation concurrent stress test, two independent shared-memory
 channels, a real-time thread hardened to PREEMPT_RT/ROS 2 discipline and verified live against a
@@ -297,15 +297,19 @@ walkthrough.
 ---
 ## Part 4 — What's left (the honest roadmap)
 **Not yet true, named plainly rather than implied:**
-- **The weather gap is closed; a new flaky case replaced it (29/30).** War story #7's miss
+- **The weather gap is closed (now 30/30, after a 29/30 run on the way).** War story #7's miss
   (`"What's the weather forecast for field-1?"`, 3/3 failures) passed 3/3 in isolated runs after
   the docstring fix, then again in a full run with all seven tools. The one failure in that run
   is new: asked what's in field-2 *and* when to harvest per the crop calendar, the model calls
   the calendar only about 60% of the time. Field-2 is fallow; the same question about field-1
   calls both tools 5/5. One skipped run still claimed to quote the calendar, which is the real
   bug. A stronger docstring didn't move the rate, so the likely fix is data, not wording. Fields
-  have no region, so the model also invents one for every calendar call, and once passed the
-  wrong crop. Giving `fields` a `region` column is the next step for both.
+  had no region, so the model also invented one for every calendar call. A `region` column
+  fixed that whenever the model looked the field up first (4/5, from 0/5). The rest came from
+  the model calling both tools in one turn and guessing. A guard in `tool_node` now refuses
+  that call, and any call with an empty required argument, so the model retries with real
+  values (6/6 correct in live probes). Two full runs then scored 30/30. The fallow-field case
+  passed both times but is still about 50/50 in isolation, so it stays a watch item.
 - **The Postgres swap is closer, but still not a tested fact.** The one dialect problem that
   was known, `AUTOINCREMENT`, is gone: the schema is now SQLAlchemy Core `Table`s, so each
   dialect emits its own auto-increment, and an offline test checks the Postgres DDL uses
