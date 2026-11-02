@@ -81,7 +81,7 @@ These outlast this specific stack. Anyone can pick up `SqliteSaver` in an aftern
 | **Isolate & inspect** | When output didn't match the code I was reading, stopped trusting the editor tab | The stale-interpreter `NameError` — the fix was already saved to disk, the running process wasn't the saved file |
 | **Make inherited defaults into decisions** | Noticed I was relying on LangGraph's default recursion limit (25) without ever having chosen it | Set it explicitly to 10, with a reason (a 7B model can misread a tool result and re-call it) |
 | **Delete code that isn't guarding anything** | Two tools had a `try/except Exception` around a hardcoded string return — no I/O, nothing that could fail | Removed it instead of narrowing it; a wider or narrower `except` around a function that can't throw is still theater |
-| **Don't build for a step you haven't taken yet** | The SQLAlchemy engine makes a future Postgres swap a one-line change — and stops there. No Postgres code has been written, because none has been *needed* yet | The open question in NOTES.md names this explicitly rather than pretending it's already validated |
+| **Don't build for a step you haven't taken yet** | The SQLAlchemy engine made a later Postgres swap a configuration change — and stopped there. When it was finally tested, the one blocker was dialect-specific DDL (`AUTOINCREMENT`), fixed by moving to SQLAlchemy Core tables; no Postgres-specific code was needed | NOTES.md kept it as an open question until a real Postgres run and a CI job backed it |
 | **Test hermetically, not against shared state** | Recognized that the app's own persistence (`SqliteSaver` + fixed `thread_id`) would make eval cases leak into each other if reused as-is | `MemorySaver` + a fresh `uuid4()` thread per test case |
 | **Name the environment as a bug source, not just the code** | An OOM crash and a CWD-relative path bug were both "correct code, wrong assumption about what's running underneath it" | The Docker/WSL memory-pressure incident; the subdirectory-launch path bug |
 | **Predict-then-verify** | State a plausible explanation for a failure, then test it directly instead of writing it down as fact | The cold-start theory for the weather-forecast miss — killed by rerunning the case alone twice more instead of trusting the first guess |
@@ -310,11 +310,12 @@ walkthrough.
   that call, and any call with an empty required argument, so the model retries with real
   values (6/6 correct in live probes). Two full runs then scored 30/30. The fallow-field case
   passed both times but is still about 50/50 in isolation, so it stays a watch item.
-- **The Postgres swap is closer, but still not a tested fact.** The one dialect problem that
-  was known, `AUTOINCREMENT`, is gone: the schema is now SQLAlchemy Core `Table`s, so each
-  dialect emits its own auto-increment, and an offline test checks the Postgres DDL uses
-  `SERIAL`. The URL comes from `DATABASE_URL`. Nobody has pointed it at a running Postgres yet,
-  and no Postgres driver is a dependency, so pooling and connection behavior are still unknown.
+- **The Postgres swap is tested now, for the domain data.** The schema is SQLAlchemy Core
+  `Table`s, so each dialect emits its own auto-increment, and `DATABASE_URL` picks the
+  database. Against a real Postgres 17, all offline tests pass, the `region` migration works on
+  an old-format database, and a CI job runs the same tests against a Postgres service on every
+  pull request. It took one dev dependency (`psycopg[binary]`) and no code changes. Still on
+  SQLite: the LangGraph checkpointer (`checkpoints.db`), which needs its own Postgres saver.
 - **`get_weather_forecast` and `lookup_crop_calendar` return fixture data.** Both are shaped so
   a real API call could replace the body without touching the tool's interface — a deliberate
   seam, not yet used.
@@ -805,7 +806,8 @@ file with no portability goal. SQLAlchemy's `engine` + `text()` earns its place 
 specific, deliberate reason: it makes the connection string the single SQLite-specific fact in
 the entire file. Every tool function already speaks parameterized SQL through an API that
 doesn't care which database is on the other end of it — so the "one-line swap to Postgres" claim
-in Part 4 is at least *structurally* set up to be true, even though it hasn't been tested yet.
+in Part 4 was *structurally* set up to be true. Testing it found the one place it wasn't (raw
+`AUTOINCREMENT` DDL); with that fixed, it now runs against a real Postgres in CI.
 ### 8.5 — Observability: self-hosted Langfuse vs. LangSmith vs. nothing
 Self-hosting Langfuse means running a real multi-container stack locally (Part 7.3) in exchange
 for zero per-trace cost and no trace data leaving the machine — consistent with this project's
@@ -1042,9 +1044,9 @@ convenient at catching.
 - Getting telemetry out of a latency-critical path without the telemetry itself becoming the
   latency source — *the second lock-free channel pattern, Part 11.5.*
 **The frontiers to grow into**
-- Testing the Postgres swap for real, not just structuring code to make it plausible.
-- Structured (typed) tool outputs instead of stringified data.
-- Token-level streaming to a user-facing surface, not just the internal transport.
+- A Postgres-backed checkpointer, now that the domain data runs on Postgres.
+- Typed tool outputs (Pydantic models) beyond today's JSON strings.
+- Token streaming to a surface other than the terminal.
 - Multi-user session handling — *a real `thread_id` source instead of a literal.*
 - Human-in-the-loop / interrupt patterns — *a natural next node type, given the graph is
   already built to add one.*

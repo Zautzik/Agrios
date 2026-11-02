@@ -202,3 +202,13 @@ Two fixes for the invented calendar arguments, each checked live against `qwen2.
 **A guard in the tool step.** `tool_node` now refuses three kinds of call: a calendar call made in the same turn as `query_field_status`, any call with an empty required argument, and an unknown tool name (which used to raise `KeyError`). Each refused call still gets a `ToolMessage` saying why, so the model can retry on its next turn. Live, on the field-1 question: 6/6 runs ended with the correct `potato`/`central Chile` call. Two of them made a same-turn guess (`wheat`/`midwest`, `unknown`/`unknown`), which the guard refused, and the model retried with the real values. Full eval: 30/30 (17m 32s).
 
 **Limits.** The guard only catches the same-turn pattern and empty values. A calendar call made on its own turn with a confident wrong value (`"unknown"`, or a made-up region when no field was named) still runs. The fallow-field case passed in both 30/30 runs but is about 50/50 in isolation, so those scores include some luck on that case.
+
+---
+
+Closed the two Docker-dependent open items: tracing and Postgres.
+
+**Tracing works; my earlier guess about why it didn't was wrong.** The last entry blamed an outdated server image. With Docker up, the server reports 3.200.0, the OTLP endpoint answers 200 with the project's keys, and a single test span exported in 0.2s and was stored. Agent traces from manual CLI runs were stored too, complete: the agent step, the `ChatOllama` generation with all 7 tools bound, and routing. The `Failed to export span batch due to timeout` errors seen today all came from runs while Docker was down. The months-old `404 Not Found` doesn't reproduce on this stack, so its cause stays unknown rather than being retro-fitted with a story.
+
+**Postgres, run for real.** A throwaway `postgres:17` container on port 55432 (the two Postgres instances already running belong to Langfuse and another project, so neither was touched). With `DATABASE_URL=postgresql+psycopg://...` and `psycopg[binary]` added as a dev dependency, all 8 offline tests passed. `\d tasks` showed what the Core tables promised: `id integer ... nextval('tasks_id_seq')`, `status` defaulting to `'pending'`, and `fields` carrying `region`. The migration also held on Postgres: an old-format `fields` table got the column, only the seed row was backfilled, and running `init_db` twice did nothing the second time. No code changes were needed. A new `postgres` CI job runs the offline tests against a Postgres service so this stays true.
+
+**Not covered:** the LangGraph checkpointer still writes to `checkpoints.db` (SQLite). Moving conversation state to Postgres needs `langgraph-checkpoint-postgres`, a separate change.
