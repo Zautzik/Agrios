@@ -171,8 +171,9 @@ across four categories: tool selection (15 cases), argument correctness (8), mul
 completion (5), and no-tool-needed (2). It's gated behind a marker so a plain `pytest` run stays
 fast and never touches Ollama; the full suite takes ~25 minutes on CPU against `qwen2.5:7b`.
 
-**Latest result: 29/30**, one full run with all 7 tools, JSON tool outputs and the weather
-docstring fix (14m 53s on CPU).
+**Latest result: 30/30**, in two separate full runs: one after adding a `region` column to
+`fields` (22m 07s on CPU), and one after adding the tool-call guard below (17m 32s). The run
+before both scored 29/30.
 - **Weather gap: closed.** *"What's the weather forecast for field-1?"* used to fail 3/3. With
   the docstring saying `location` can be a `field_id` and that every weather question must call
   the tool, it passed 3/3 in isolated runs and again in the full run.
@@ -183,10 +184,20 @@ docstring fix (14m 53s on CPU).
   field-2 being fallow. Skipping the calendar for an empty field is defensible; one skipped run
   still answered *"according to the crop calendar…"* without having called it, which isn't. A
   stronger docstring ("always call this tool…") made no measurable difference (3/5), so it
-  wasn't kept.
-- **Invented arguments.** Fields have no region, so the model makes one up ("Midwest USA",
-  "generic-region"), and once passed `corn` for the potato field. The fixture ignores both, so
-  no test fails, but a real calendar API would return wrong answers.
+  wasn't kept. This case passed in both 30/30 runs but is still flaky in isolation (4/8 with the
+  region column), so the 30/30 partly reflects luck on this one case.
+- **Invented arguments: fixed in two steps.** Fields had no region, so the model made one up
+  ("Midwest USA", "generic-region"). With a `region` column that `query_field_status` returns,
+  4/5 runs on the field-1 question passed the real `potato`/`central Chile` (0/5 before). The
+  miss came from the model calling both tools *in the same turn*, before it had the field's
+  data, and guessing. A guard in the tool step now refuses a calendar call made alongside
+  `query_field_status`, and any call with an empty required argument, replying with why so the
+  model can retry. With the guard: 6/6 runs ended on the correct call, including 2 where it
+  caught a same-turn guess and the model retried with the real values. The guard can't catch a
+  confident wrong value in a call made on its own (e.g. `"unknown"` as a region).
+- **Tried and dropped:** telling the model in the calendar docstring to take the region from
+  `query_field_status`. It stopped guessing, but asked the user instead of looking the field up:
+  *"When can I harvest the potatoes I'm growing?"* fell to 1/5 tool calls.
 - **Recursion-limit flake on the frost question:** didn't recur in this run. Still too little
   data to call it resolved.
 
@@ -252,4 +263,4 @@ ctest --test-dir cpp/build --output-on-failure
 - `get_weather_forecast` and `lookup_crop_calendar` return fixture data, not live API results.
 - One conversation per `--thread` id (default `"1"`), chosen on the command line — not per-user session handling. Only the last 20 messages, starting at a user turn, are sent to the model; the full history stays in `checkpoints.db`. That fixes the slowdown a long-lived thread caused (25+ messages replayed every turn, 30s–2min on CPU), at the cost of the model forgetting older turns. There's no summarization of what gets dropped.
 - `qwen2.5:7b` needs ~4.3 GB free RAM to load; on a constrained machine running Docker simultaneously, this can fail — handled gracefully (see Design decisions) rather than crashing, but worth knowing going in.
-- Langfuse trace export is currently failing in local verification (`Read timed out`, then `404 Not Found` from the OTLP endpoint) — traces are not being recorded even though the agent itself runs fine, since export happens on a non-blocking background path. Root cause not yet investigated; most likely an SDK/server version mismatch on the self-hosted instance.
+- Tracing needs the self-hosted Langfuse stack running in Docker. With it up, full agent traces export and are stored (checked against server 3.200.0 and SDK 4.12.0: agent step, `ChatOllama` generation with all 7 tools bound, routing). With Docker down, the agent still runs, but the background exporter logs `Failed to export span batch` errors. An earlier `404 Not Found` from the OTLP endpoint doesn't reproduce on the current stack, so its cause is unknown.

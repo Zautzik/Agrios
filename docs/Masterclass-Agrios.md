@@ -14,7 +14,7 @@
 > invented, and nowhere does this document claim a measured result the project doesn't actually
 > have. The eval suite has been run for real: 28/30 on reconciliation, one confirmed reproducible
 > gap, one open question — see war story #7 in Part 3. The latest run, with all seven tools and
-> the weather fix, scored 29/30 (see Part 4). The bridge has been verified for real
+> the weather fix, the `region` column and the tool-call guard, scored 30/30 twice (see Part 4). The bridge has been verified for real
 > too, including two rounds of adversarial audit that each found genuine bugs and each correctly
 > refused at least one demanded "fix" that would have been a regression — see war stories #13
 > and #14, and Part 11 in full.
@@ -81,7 +81,7 @@ These outlast this specific stack. Anyone can pick up `SqliteSaver` in an aftern
 | **Isolate & inspect** | When output didn't match the code I was reading, stopped trusting the editor tab | The stale-interpreter `NameError` — the fix was already saved to disk, the running process wasn't the saved file |
 | **Make inherited defaults into decisions** | Noticed I was relying on LangGraph's default recursion limit (25) without ever having chosen it | Set it explicitly to 10, with a reason (a 7B model can misread a tool result and re-call it) |
 | **Delete code that isn't guarding anything** | Two tools had a `try/except Exception` around a hardcoded string return — no I/O, nothing that could fail | Removed it instead of narrowing it; a wider or narrower `except` around a function that can't throw is still theater |
-| **Don't build for a step you haven't taken yet** | The SQLAlchemy engine makes a future Postgres swap a one-line change — and stops there. No Postgres code has been written, because none has been *needed* yet | The open question in NOTES.md names this explicitly rather than pretending it's already validated |
+| **Don't build for a step you haven't taken yet** | The SQLAlchemy engine made a later Postgres swap a configuration change — and stopped there. When it was finally tested, the one blocker was dialect-specific DDL (`AUTOINCREMENT`), fixed by moving to SQLAlchemy Core tables; no Postgres-specific code was needed | NOTES.md kept it as an open question until a real Postgres run and a CI job backed it |
 | **Test hermetically, not against shared state** | Recognized that the app's own persistence (`SqliteSaver` + fixed `thread_id`) would make eval cases leak into each other if reused as-is | `MemorySaver` + a fresh `uuid4()` thread per test case |
 | **Name the environment as a bug source, not just the code** | An OOM crash and a CWD-relative path bug were both "correct code, wrong assumption about what's running underneath it" | The Docker/WSL memory-pressure incident; the subdirectory-launch path bug |
 | **Predict-then-verify** | State a plausible explanation for a failure, then test it directly instead of writing it down as fact | The cold-start theory for the weather-forecast miss — killed by rerunning the case alone twice more instead of trusting the first guess |
@@ -107,7 +107,7 @@ Every phase below is one real commit — this is the actual build order, not a r
 **Current state, stated plainly:** two systems in one repo. The Python side: a single-file
 (~175-line) CLI agent, seven tools (three DB-backed, two fixture data, two crossing into the C++
 bridge), one hardcoded `thread_id`, local-only inference, traced through a self-hosted Langfuse
-stack, checked by a 30-case suite now scoring 29/30 with all seven tools (28/30 before the
+stack, checked by a 30-case suite now scoring 30/30 with all seven tools (28/30 before the
 weather fix — see Part 4). The C++ side: a lock-free SPSC ring buffer proven
 correct under a 5,000,000-operation concurrent stress test, two independent shared-memory
 channels, a real-time thread hardened to PREEMPT_RT/ROS 2 discipline and verified live against a
@@ -297,20 +297,25 @@ walkthrough.
 ---
 ## Part 4 — What's left (the honest roadmap)
 **Not yet true, named plainly rather than implied:**
-- **The weather gap is closed; a new flaky case replaced it (29/30).** War story #7's miss
+- **The weather gap is closed (now 30/30, after a 29/30 run on the way).** War story #7's miss
   (`"What's the weather forecast for field-1?"`, 3/3 failures) passed 3/3 in isolated runs after
   the docstring fix, then again in a full run with all seven tools. The one failure in that run
   is new: asked what's in field-2 *and* when to harvest per the crop calendar, the model calls
   the calendar only about 60% of the time. Field-2 is fallow; the same question about field-1
   calls both tools 5/5. One skipped run still claimed to quote the calendar, which is the real
   bug. A stronger docstring didn't move the rate, so the likely fix is data, not wording. Fields
-  have no region, so the model also invents one for every calendar call, and once passed the
-  wrong crop. Giving `fields` a `region` column is the next step for both.
-- **The Postgres swap is closer, but still not a tested fact.** The one dialect problem that
-  was known, `AUTOINCREMENT`, is gone: the schema is now SQLAlchemy Core `Table`s, so each
-  dialect emits its own auto-increment, and an offline test checks the Postgres DDL uses
-  `SERIAL`. The URL comes from `DATABASE_URL`. Nobody has pointed it at a running Postgres yet,
-  and no Postgres driver is a dependency, so pooling and connection behavior are still unknown.
+  had no region, so the model also invented one for every calendar call. A `region` column
+  fixed that whenever the model looked the field up first (4/5, from 0/5). The rest came from
+  the model calling both tools in one turn and guessing. A guard in `tool_node` now refuses
+  that call, and any call with an empty required argument, so the model retries with real
+  values (6/6 correct in live probes). Two full runs then scored 30/30. The fallow-field case
+  passed both times but is still about 50/50 in isolation, so it stays a watch item.
+- **The Postgres swap is tested now, for the domain data.** The schema is SQLAlchemy Core
+  `Table`s, so each dialect emits its own auto-increment, and `DATABASE_URL` picks the
+  database. Against a real Postgres 17, all offline tests pass, the `region` migration works on
+  an old-format database, and a CI job runs the same tests against a Postgres service on every
+  pull request. It took one dev dependency (`psycopg[binary]`) and no code changes. Still on
+  SQLite: the LangGraph checkpointer (`checkpoints.db`), which needs its own Postgres saver.
 - **`get_weather_forecast` and `lookup_crop_calendar` return fixture data.** Both are shaped so
   a real API call could replace the body without touching the tool's interface — a deliberate
   seam, not yet used.
@@ -801,7 +806,8 @@ file with no portability goal. SQLAlchemy's `engine` + `text()` earns its place 
 specific, deliberate reason: it makes the connection string the single SQLite-specific fact in
 the entire file. Every tool function already speaks parameterized SQL through an API that
 doesn't care which database is on the other end of it — so the "one-line swap to Postgres" claim
-in Part 4 is at least *structurally* set up to be true, even though it hasn't been tested yet.
+in Part 4 was *structurally* set up to be true. Testing it found the one place it wasn't (raw
+`AUTOINCREMENT` DDL); with that fixed, it now runs against a real Postgres in CI.
 ### 8.5 — Observability: self-hosted Langfuse vs. LangSmith vs. nothing
 Self-hosting Langfuse means running a real multi-container stack locally (Part 7.3) in exchange
 for zero per-trace cost and no trace data leaving the machine — consistent with this project's
@@ -1038,9 +1044,9 @@ convenient at catching.
 - Getting telemetry out of a latency-critical path without the telemetry itself becoming the
   latency source — *the second lock-free channel pattern, Part 11.5.*
 **The frontiers to grow into**
-- Testing the Postgres swap for real, not just structuring code to make it plausible.
-- Structured (typed) tool outputs instead of stringified data.
-- Token-level streaming to a user-facing surface, not just the internal transport.
+- A Postgres-backed checkpointer, now that the domain data runs on Postgres.
+- Typed tool outputs (Pydantic models) beyond today's JSON strings.
+- Token streaming to a surface other than the terminal.
 - Multi-user session handling — *a real `thread_id` source instead of a literal.*
 - Human-in-the-loop / interrupt patterns — *a natural next node type, given the graph is
   already built to add one.*

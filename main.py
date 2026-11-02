@@ -12,7 +12,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
 from langfuse.langchain import CallbackHandler
 from langgraph.errors import GraphRecursionError
-from sqlalchemy import create_engine, select, func, insert, MetaData, Table, Column, Integer, Text
+from sqlalchemy import create_engine, select, func, insert, update, inspect, text, MetaData, Table, Column, Integer, Text
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.exc import SQLAlchemyError
 import argparse
@@ -41,6 +41,7 @@ fields_table = Table(
     Column("field_id", Text, primary_key=True),
     Column("crop", Text),
     Column("status", Text),
+    Column("region", Text),
 )
 tasks_table = Table(
     "tasks", metadata,
@@ -54,18 +55,28 @@ tasks_table = Table(
 # the checkpoint. Without this, every turn replays the whole thread.
 MAX_HISTORY_MESSAGES = 20
 
-def init_db():
-    metadata.create_all(engine)
-    with engine.begin() as conn:
+SEED_FIELDS = [
+    {"field_id": "field-1", "crop": "potato", "status": "growing", "region": "central Chile"},
+    {"field_id": "field-2", "crop": "wheat", "status": "fallow", "region": "central Chile"},
+]
+
+def init_db(db_engine=engine):
+    metadata.create_all(db_engine)
+    with db_engine.begin() as conn:
+        # create_all doesn't alter existing tables: databases made before the
+        # region column existed get it added here, and the seed rows backfilled.
+        columns = {c["name"] for c in inspect(conn).get_columns("fields")}
+        if "region" not in columns:
+            conn.execute(text("ALTER TABLE fields ADD COLUMN region TEXT"))
+            for row in SEED_FIELDS:
+                conn.execute(
+                    update(fields_table)
+                    .where(fields_table.c.field_id == row["field_id"], fields_table.c.region.is_(None))
+                    .values(region=row["region"])
+                )
         count = conn.execute(select(func.count()).select_from(fields_table)).scalar()
         if count == 0:
-            conn.execute(
-                insert(fields_table),
-                [
-                    {"field_id": "field-1", "crop": "potato", "status": "growing"},
-                    {"field_id": "field-2", "crop": "wheat", "status": "fallow"},
-                ]
-            )
+            conn.execute(insert(fields_table), SEED_FIELDS)
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
@@ -91,13 +102,45 @@ def should_continue(state: AgentState):
 
 init_db()
 
+# Tools whose arguments should come from query_field_status's result. When the
+# model calls one in the same turn as query_field_status, it hasn't seen that
+# result yet and is guessing, so the call is sent back instead of run.
+FIELD_DEPENDENT_TOOLS = {"lookup_crop_calendar"}
+# Arguments that must not be empty; the model sometimes sends "" for them.
+REQUIRED_ARGS = {
+    "lookup_crop_calendar": ("crop", "region"),
+    "get_weather_forecast": ("location",),
+    "query_field_status": ("field_id",),
+    "log_task": ("field_id", "description"),
+}
+
+def rejected_call_reason(call: dict, names_this_turn: set[str]) -> str | None:
+    """Why a tool call shouldn't run as given, or None if it should."""
+    name = call["name"]
+    if name not in tools_by_name:
+        return f"Unknown tool {name!r}."
+    if name in FIELD_DEPENDENT_TOOLS and "query_field_status" in names_this_turn:
+        return (f"Not run: wait for query_field_status's result, then call {name} again "
+                "with the crop and region it returned.")
+    empty = [a for a in REQUIRED_ARGS.get(name, ()) if not str(call["args"].get(a, "")).strip()]
+    if empty:
+        return f"Not run: {', '.join(empty)} must not be empty."
+    return None
+
 def tool_node(state: AgentState):
     last_message = state["messages"][-1]
+    names_this_turn = {c["name"] for c in last_message.tool_calls}
     results = []
     for call in last_message.tool_calls:
-        logger.info("tool_node: calling %s(%s)", call["name"], call["args"])
-        tool = tools_by_name[call["name"]]
-        output = tool.invoke(call["args"])
+        # Every tool call still gets a ToolMessage, so the model sees why a
+        # rejected call didn't run and can retry it on its next turn.
+        reason = rejected_call_reason(call, names_this_turn)
+        if reason:
+            logger.warning("tool_node: rejected %s(%s): %s", call["name"], call["args"], reason)
+            output = json.dumps({"error": reason})
+        else:
+            logger.info("tool_node: calling %s(%s)", call["name"], call["args"])
+            output = tools_by_name[call["name"]].invoke(call["args"])
         results.append(
             ToolMessage(content=str(output), tool_call_id=call["id"], name=call["name"])
         )
@@ -120,7 +163,7 @@ def lookup_crop_calendar(crop: str, region: str) -> str:
 
 @tool
 def query_field_status(field_id: str) -> str:
-    """Returns the crop and status for a given field_id. field_id must match
+    """Returns the crop, status and region for a given field_id. field_id must match
 the format "field-<n>", e.g. "field-1" or "field-2"."""
     try:
         with engine.connect() as conn:
