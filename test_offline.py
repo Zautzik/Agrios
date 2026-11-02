@@ -51,6 +51,36 @@ def test_init_db_adds_region_to_a_pre_region_database(tmp_path):
     assert rows == {"field-1": "central Chile", "field-7": None}  # only seed rows are backfilled
 
 
+def _run_tool_turn(*calls):
+    msg = AIMessage("", tool_calls=[{"name": n, "args": a, "id": f"c{i}"} for i, (n, a) in enumerate(calls)])
+    out = main.tool_node({"messages": [HumanMessage("q"), msg]})["messages"]
+    assert [m.tool_call_id for m in out] == [f"c{i}" for i in range(len(calls))]  # one reply per call
+    return [json.loads(m.content) for m in out]
+
+
+def test_guard_defers_calendar_called_alongside_field_lookup():
+    field, calendar = _run_tool_turn(
+        ("query_field_status", {"field_id": "field-1"}),
+        ("lookup_crop_calendar", {"crop": "wheat", "region": "Midwest USA"}),
+    )
+    assert field["crop"] == "potato"
+    assert "query_field_status" in calendar["error"]
+
+
+def test_guard_rejects_empty_and_unknown_calls():
+    empty, unknown = _run_tool_turn(
+        ("lookup_crop_calendar", {"crop": "", "region": " "}),
+        ("delete_everything", {}),
+    )
+    assert "crop, region must not be empty" in empty["error"]
+    assert "Unknown tool" in unknown["error"]
+
+
+def test_guard_lets_valid_calls_through():
+    (calendar,) = _run_tool_turn(("lookup_crop_calendar", {"crop": "potato", "region": "central Chile"}))
+    assert calendar["crop"] == "potato"
+
+
 def _trim(messages):
     return trim_messages(messages, token_counter=len, max_tokens=main.MAX_HISTORY_MESSAGES,
                          strategy="last", start_on="human")

@@ -102,13 +102,45 @@ def should_continue(state: AgentState):
 
 init_db()
 
+# Tools whose arguments should come from query_field_status's result. When the
+# model calls one in the same turn as query_field_status, it hasn't seen that
+# result yet and is guessing, so the call is sent back instead of run.
+FIELD_DEPENDENT_TOOLS = {"lookup_crop_calendar"}
+# Arguments that must not be empty; the model sometimes sends "" for them.
+REQUIRED_ARGS = {
+    "lookup_crop_calendar": ("crop", "region"),
+    "get_weather_forecast": ("location",),
+    "query_field_status": ("field_id",),
+    "log_task": ("field_id", "description"),
+}
+
+def rejected_call_reason(call: dict, names_this_turn: set[str]) -> str | None:
+    """Why a tool call shouldn't run as given, or None if it should."""
+    name = call["name"]
+    if name not in tools_by_name:
+        return f"Unknown tool {name!r}."
+    if name in FIELD_DEPENDENT_TOOLS and "query_field_status" in names_this_turn:
+        return (f"Not run: wait for query_field_status's result, then call {name} again "
+                "with the crop and region it returned.")
+    empty = [a for a in REQUIRED_ARGS.get(name, ()) if not str(call["args"].get(a, "")).strip()]
+    if empty:
+        return f"Not run: {', '.join(empty)} must not be empty."
+    return None
+
 def tool_node(state: AgentState):
     last_message = state["messages"][-1]
+    names_this_turn = {c["name"] for c in last_message.tool_calls}
     results = []
     for call in last_message.tool_calls:
-        logger.info("tool_node: calling %s(%s)", call["name"], call["args"])
-        tool = tools_by_name[call["name"]]
-        output = tool.invoke(call["args"])
+        # Every tool call still gets a ToolMessage, so the model sees why a
+        # rejected call didn't run and can retry it on its next turn.
+        reason = rejected_call_reason(call, names_this_turn)
+        if reason:
+            logger.warning("tool_node: rejected %s(%s): %s", call["name"], call["args"], reason)
+            output = json.dumps({"error": reason})
+        else:
+            logger.info("tool_node: calling %s(%s)", call["name"], call["args"])
+            output = tools_by_name[call["name"]].invoke(call["args"])
         results.append(
             ToolMessage(content=str(output), tool_call_id=call["id"], name=call["name"])
         )
