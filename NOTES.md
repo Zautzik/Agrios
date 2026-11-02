@@ -212,3 +212,15 @@ Closed the two Docker-dependent open items: tracing and Postgres.
 **Postgres, run for real.** A throwaway `postgres:17` container on port 55432 (the two Postgres instances already running belong to Langfuse and another project, so neither was touched). With `DATABASE_URL=postgresql+psycopg://...` and `psycopg[binary]` added as a dev dependency, all 8 offline tests passed. `\d tasks` showed what the Core tables promised: `id integer ... nextval('tasks_id_seq')`, `status` defaulting to `'pending'`, and `fields` carrying `region`. The migration also held on Postgres: an old-format `fields` table got the column, only the seed row was backfilled, and running `init_db` twice did nothing the second time. No code changes were needed. A new `postgres` CI job runs the offline tests against a Postgres service so this stays true.
 
 **Not covered:** the LangGraph checkpointer still writes to `checkpoints.db` (SQLite). Moving conversation state to Postgres needs `langgraph-checkpoint-postgres`, a separate change.
+
+---
+
+Moved conversation history onto Postgres, behind the same `DATABASE_URL`.
+
+**One setting for both stores.** `open_checkpointer()` reads `DATABASE_URL`. For a Postgres URL it opens a `PostgresSaver` on the same database and calls `setup()`, which creates or migrates its four tables and is safe to repeat. Otherwise it opens `SqliteSaver` on `checkpoints.db`, exactly as before. One detail: SQLAlchemy URLs carry a driver (`postgresql+psycopg://`) and libpq doesn't accept it, so the function rewrites the scheme rather than asking for a second setting. `langgraph-checkpoint-postgres` and `psycopg[binary]` are now runtime dependencies rather than dev-only, since a Postgres setup needs them to run.
+
+**Tested without the model.** `update_state(..., as_node="agent")` writes a checkpoint without running any node, so a conversation can be saved and read back without Ollama. On SQLite: one round trip. On Postgres: written through one connection, then read through a fresh one, as after a CLI restart. Against a fresh `postgres:17`, all 10 offline tests passed, and again on a second run against the same database. The CI `postgres` job runs the Postgres test; elsewhere it's skipped.
+
+**A test bug caught on the first run.** The first version of the Postgres test saved only a user message. Saving "as the agent" runs the agent's routing check, which reads `tool_calls` off the last message, and a `HumanMessage` has none. The SQLite test happened to end on an `AIMessage`, so only Postgres failed. That's not a checkpointer problem; real agent turns always end on an `AIMessage`.
+
+**Not done.** Existing history in `checkpoints.db` isn't copied into Postgres when you switch. No live CLI session has run on Postgres yet; that needs Ollama and Docker at the same time.
