@@ -152,7 +152,7 @@ Would you like to log a task for field-1 or need more information about the crop
 | `submit_spatial_intent(tvec, rvec)` | Pydantic-validated 6D pose, pushed onto the C++ motor-control bridge |
 | `read_joint_states()` | Reads live joint-angle telemetry from the motor-control bridge |
 
-`get_weather_forecast` and `lookup_crop_calendar` currently return fixture data — they're shaped to be swapped for real API calls without changing their interface. The last two are defined in [spatial_tools.py](spatial_tools.py), not `main.py`, and degrade to a plain string result (not a crash) when the C++ side isn't available — true by default on this project's own Windows dev machine, since POSIX shared memory doesn't exist there.
+`get_weather_forecast` calls [Open-Meteo](https://open-meteo.com/) (free, no API key): a `field_id` uses the field's stored coordinates, anything else is geocoded, each day carries a `frost_risk` flag (minimum ≤ 2 °C), and a failed lookup returns an error rather than made-up numbers. `lookup_crop_calendar` still returns fixture data. The last two are defined in [spatial_tools.py](spatial_tools.py), not `main.py`, and degrade to a plain string result (not a crash) when the C++ side isn't available — true by default on this project's own Windows dev machine, since POSIX shared memory doesn't exist there.
 
 ### Design decisions
 
@@ -177,15 +177,13 @@ before both scored 29/30.
 - **Weather gap: closed.** *"What's the weather forecast for field-1?"* used to fail 3/3. With
   the docstring saying `location` can be a `field_id` and that every weather question must call
   the tool, it passed 3/3 in isolated runs and again in the full run.
-- **New flaky case: a fallow field skips the crop calendar.** *"What's in field-2 and when
-  should I harvest per the crop calendar"* calls `query_field_status` every time, but
-  `lookup_crop_calendar` only about 60% of the time (5 of 8 isolated runs). The same question
-  about field-1, which is growing potatoes, called both tools 5/5, so the trigger looks like
-  field-2 being fallow. Skipping the calendar for an empty field is defensible; one skipped run
-  still answered *"according to the crop calendar…"* without having called it, which isn't. A
-  stronger docstring ("always call this tool…") made no measurable difference (3/5), so it
-  wasn't kept. This case passed in both 30/30 runs but is still flaky in isolation (4/8 with the
-  region column), so the 30/30 partly reflects luck on this one case.
+- **Fallow-field case: fixed.** *"What's in field-2 and when should I harvest per the crop
+  calendar"* used to call `lookup_crop_calendar` only about half the time (4–5 of 8 isolated
+  runs), because field-2 is fallow and the model decided there was nothing to look up. A
+  stronger docstring didn't help (3/5). What did: `query_field_status` now adds a note to a
+  fallow field's result saying the crop is the planned crop and pointing at the calendar.
+  Isolated: 8/8, every call with `wheat`/`central Chile`.
+- **Latest full run, after real weather and summaries:** 30/30 (31m 41s; slower than earlier runs because Docker was holding about 4.5 GB of RAM). The weather cases now call the real Open-Meteo, so they also need network access.
 - **Invented arguments: fixed in two steps.** Fields had no region, so the model made one up
   ("Midwest USA", "generic-region"). With a `region` column that `query_field_status` returns,
   4/5 runs on the field-1 question passed the real `potato`/`central Chile` (0/5 before). The
@@ -260,7 +258,7 @@ ctest --test-dir cpp/build --output-on-failure
 - **No VLA/perception pipeline is wired in.** `submit_spatial_intent` is exercised today by an LLM tool call reasoning from natural language, not by a vision or learned-policy model — the bridge is producer-agnostic by design, but nothing in this repo currently produces `tvec`/`rvec` from vision.
 - **No real hardware, no real joints.** `JointState6` telemetry is a synthetic waveform published by the RT loop, a stand-in for real encoder feedback — there is no motor, encoder, or physical arm behind this yet.
 - **Latency figures so far come from stock-kernel CI VMs.** Real-time *safety* (no allocation, locks, blocking, or page faults in the loop) is platform-independent and verified above. An absolute worst-case latency is not: it belongs to a specific machine's kernel, firmware, and core isolation, so it's measured per machine with `cpp/tools/rt_validate.sh` on a PREEMPT_RT kernel. [cpp/README.md](cpp/README.md#measuring-latency-on-real-hardware) covers running it from a live USB without installing anything.
-- `get_weather_forecast` and `lookup_crop_calendar` return fixture data, not live API results.
-- One conversation per `--thread` id (default `"1"`), chosen on the command line — not per-user session handling. Only the last 20 messages, starting at a user turn, are sent to the model; the full history stays in `checkpoints.db`. That fixes the slowdown a long-lived thread caused (25+ messages replayed every turn, 30s–2min on CPU), at the cost of the model forgetting older turns. There's no summarization of what gets dropped.
+- `lookup_crop_calendar` returns fixture data, not live results. Weather is live from Open-Meteo, so it needs network access; without it the tool returns an error.
+- One conversation per `--thread` id (default `"1"`), chosen on the command line — not per-user session handling. Only the last 20 messages, starting at a user turn, are sent to the model; the full history stays in `checkpoints.db`. That fixes the slowdown a long-lived thread caused (25+ messages replayed every turn, 30s–2min on CPU), and once a thread passes 20 messages, everything but the last ~10 is folded into a running summary that the agent sees as a system message. That costs one extra model call each time it happens, and a summary is lossy: details it leaves out are gone from the model's view (the full messages stay in older checkpoints). To move existing history onto Postgres, run `migrate_checkpoints.py` with `DATABASE_URL` set; it copies every thread and is safe to re-run.
 - `qwen2.5:7b` needs ~4.3 GB free RAM to load; on a constrained machine running Docker simultaneously, this can fail — handled gracefully (see Design decisions) rather than crashing, but worth knowing going in.
 - Tracing needs the self-hosted Langfuse stack running in Docker. With it up, full agent traces export and are stored (checked against server 3.200.0 and SDK 4.12.0: agent step, `ChatOllama` generation with all 7 tools bound, routing). With Docker down, the agent still runs, but the background exporter logs `Failed to export span batch` errors. An earlier `404 Not Found` from the OTLP endpoint doesn't reproduce on the current stack, so its cause is unknown.
