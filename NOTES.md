@@ -224,3 +224,21 @@ Moved conversation history onto Postgres, behind the same `DATABASE_URL`.
 **A test bug caught on the first run.** The first version of the Postgres test saved only a user message. Saving "as the agent" runs the agent's routing check, which reads `tool_calls` off the last message, and a `HumanMessage` has none. The SQLite test happened to end on an `AIMessage`, so only Postgres failed. That's not a checkpointer problem; real agent turns always end on an `AIMessage`.
 
 **Not done.** Existing history in `checkpoints.db` isn't copied into Postgres when you switch. No live CLI session has run on Postgres yet; that needs Ollama and Docker at the same time.
+
+---
+
+Closed the remaining software items: the fallow-field case, real weather, history summaries, history migration, and a live CLI session on Postgres.
+
+**Fallow field: a data hint where wording failed.** Two docstring attempts had already failed on this case. This time the change went into the data: `query_field_status` adds a `note` to a fallow field's result saying the crop is the planned crop and to call `lookup_crop_calendar` for timing. Isolated, 8/8 runs then called the calendar with `wheat`/`central Chile` (4/8 before). Run 7 also made a same-turn call with empty arguments; the guard refused it and the model retried correctly. The lesson matches the region column: give the model the fact at the moment it decides, not a rule in a docstring it read before the conversation started.
+
+**Weather from Open-Meteo.** Fields got `latitude`/`longitude` (added to older databases by `init_db`, like `region`). A `field_id` uses those coordinates; any other location is geocoded. Failures return an error, not invented numbers. The offline suite now refuses any network call through an autouse fixture, and the weather tests fake Open-Meteo's responses.
+
+**The first live run found a reasoning error the data didn't cause.** Asked about frost on migrated thread "1", the model got a correct forecast (minimums of 10–12 °C) and then called 10 °C "a frost risk". The fix follows the same pattern: each forecast day now carries `frost_risk` (minimum ≤ 2 °C), computed in code. On a fresh thread, 3/3 runs answered "no frost risk". One of the three also said "no rain" when the forecast had rain on one day, a smaller faithfulness slip that's still open. The same run asked about "Colina" rather than field-1, because that thread's earlier messages were about Colina: the user's own history, not a bug.
+
+**Summaries.** Past 20 messages, a `summarize` node folds all but the last ~10 messages (cut at a user turn) into a running summary, removes them from state with `RemoveMessage`, and the agent sees the summary as a system message. Live on Postgres: the 33-message thread became 10 messages plus a summary. The first summary opened with "Hi! I'm Qwen…" and closed with an offer to help. Telling it in the same message to "reply with the summary only" removed the greeting, but it still added "Next steps" advice and an offer. Moving the rules into a system message ("notes for the assistant, not a reply to the user… no advice, next steps, greetings, or offers") gave clean bullet notes in 2 of 3 runs; the third still ended with "Next steps". Mostly fixed, not fully: a 7B model drifts back into assistant voice.
+
+**Migration.** `migrate_checkpoints.py` copies every checkpoint and its pending writes from `checkpoints.db` into the Postgres named by `DATABASE_URL`, parents before children, and is safe to re-run. On a copy of the real file: 60 checkpoints across 3 threads, and every thread's messages identical on both sides.
+
+**Full eval:** 30/30 (31m 41s; slower than earlier runs because Docker was holding about 4.5 GB of RAM). The weather cases now call the real Open-Meteo, so they also need network access.
+
+**Still open, software:** the crop calendar is fixture data (no free API found), the one "no rain" slip above, and no per-user sessions. **Hardware:** the PREEMPT_RT latency run, the arm64 two-process bridge, and real motors.

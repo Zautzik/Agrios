@@ -9,12 +9,54 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.schema import CreateTable
 
+import httpx
+
 import main
+import migrate_checkpoints
 
 
-def test_tools_return_json():
+class FakeResponse:
+    def __init__(self, payload, status=200):
+        self.payload, self.status = payload, status
+
+    def json(self):
+        return self.payload
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise httpx.HTTPStatusError("boom", request=None, response=None)
+
+
+FORECAST = {"daily": {"time": ["2026-11-02", "2026-11-03"], "temperature_2m_max": [21.1, 18.2],
+                      "temperature_2m_min": [6.0, -0.5], "precipitation_sum": [0.0, 4.2]}}
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Offline tests never reach Open-Meteo; a test that needs it fakes it."""
+    def refuse(*args, **kwargs):
+        raise AssertionError(f"unexpected network call: {args} {kwargs}")
+    monkeypatch.setattr(main.httpx, "get", refuse)
+
+
+@pytest.fixture
+def fake_open_meteo(monkeypatch):
+    calls = []
+    def get(url, params=None, timeout=None):
+        calls.append((url, params))
+        if url == main.OPEN_METEO_GEOCODE:
+            hits = [] if params["name"] == "Atlantis" else [
+                {"name": "Talca", "admin1": "Maule", "country": "Chile", "latitude": -35.43, "longitude": -71.67}]
+            return FakeResponse({"results": hits} if hits else {})
+        return FakeResponse(FORECAST)
+    monkeypatch.setattr(main.httpx, "get", get)
+    return calls
+
+
+def test_tools_return_json(fake_open_meteo):
     field = json.loads(main.query_field_status.invoke({"field_id": "field-1"}))
-    assert field == {"field_id": "field-1", "crop": "potato", "status": "growing", "region": "central Chile"}
+    assert field == {"field_id": "field-1", "crop": "potato", "status": "growing", "region": "central Chile",
+                     "latitude": -34.17, "longitude": -70.74}
 
     missing = json.loads(main.query_field_status.invoke({"field_id": "field-99"}))
     assert "error" in missing
@@ -30,6 +72,37 @@ def test_tools_return_json():
     assert weather["location"] == 'Bob\'s "field"'
     crop = json.loads(main.lookup_crop_calendar.invoke({"crop": "potato", "region": "Chile"}))
     assert crop["crop"] == "potato"
+
+
+def test_weather_for_a_field_uses_its_stored_coordinates(fake_open_meteo):
+    weather = json.loads(main.get_weather_forecast.invoke({"location": "Field-1", "days": 2}))
+    assert weather["resolved_to"] == "field-1"
+    assert weather["forecast"][1] == {"date": "2026-11-03", "temp_max_c": 18.2, "temp_min_c": -0.5, "rain_mm": 4.2,
+                                      "frost_risk": True}
+    assert weather["forecast"][0]["frost_risk"] is False  # 6.0 °C minimum
+    (url, params), = fake_open_meteo  # no geocoding call for a known field
+    assert url == main.OPEN_METEO_FORECAST
+    assert (params["latitude"], params["longitude"], params["forecast_days"]) == (-34.17, -70.74, 2)
+
+
+def test_weather_for_a_place_name_geocodes_it(fake_open_meteo):
+    weather = json.loads(main.get_weather_forecast.invoke({"location": "Talca", "days": 99}))
+    assert weather["resolved_to"] == "Talca, Maule, Chile"
+    assert fake_open_meteo[1][1]["forecast_days"] == 16  # capped to what Open-Meteo serves
+
+
+def test_weather_reports_errors_instead_of_inventing_data(fake_open_meteo, monkeypatch):
+    unknown = json.loads(main.get_weather_forecast.invoke({"location": "Atlantis"}))
+    assert "Couldn't find" in unknown["error"]
+
+    monkeypatch.setattr(main.httpx, "get", lambda *a, **k: FakeResponse({}, status=503))
+    down = json.loads(main.get_weather_forecast.invoke({"location": "field-1"}))
+    assert "Weather service unavailable" in down["error"]
+
+
+def test_fallow_field_points_at_the_crop_calendar():
+    field = json.loads(main.query_field_status.invoke({"field_id": "field-2"}))
+    assert field["status"] == "fallow" and "lookup_crop_calendar" in field["note"]
 
 
 def test_schema_compiles_for_postgres_and_sqlite():
@@ -49,8 +122,9 @@ def test_init_db_adds_region_to_a_pre_region_database(tmp_path):
     main.init_db(db)  # second run must be a no-op
 
     with db.connect() as conn:
-        rows = dict(conn.execute(text("SELECT field_id, region FROM fields")).fetchall())
-    assert rows == {"field-1": "central Chile", "field-7": None}  # only seed rows are backfilled
+        rows = {r[0]: tuple(r[1:]) for r in conn.execute(text("SELECT field_id, region, latitude, longitude FROM fields"))}
+    # only seed rows are backfilled
+    assert rows == {"field-1": ("central Chile", -34.17, -70.74), "field-7": (None, None, None)}
 
 
 def _round_trip_history(checkpointer):
@@ -79,6 +153,91 @@ def test_postgres_checkpointer_keeps_history_across_connections():
     with main.open_checkpointer() as saver:
         messages = main.graph.compile(checkpointer=saver).get_state(thread).values["messages"]
     assert [m.content for m in messages] == ["remember me", "noted"]
+
+
+class FakeModel:
+    def __init__(self, reply):
+        self.reply, self.seen = reply, []
+
+    def invoke(self, messages):
+        self.seen.append(messages)
+        return AIMessage(self.reply)
+
+
+def _long_thread(turns):
+    messages = []
+    for i in range(turns):
+        messages += [
+            HumanMessage(f"q{i}", id=f"h{i}"),
+            AIMessage("", tool_calls=[{"name": "get_pending_tasks", "args": {}, "id": f"c{i}"}], id=f"a{i}"),
+            ToolMessage("[]", tool_call_id=f"c{i}", id=f"t{i}"),
+            AIMessage(f"a{i}", id=f"r{i}"),
+        ]
+    return messages
+
+
+def test_long_thread_routes_to_summarize_and_short_one_ends():
+    assert main.should_continue({"messages": _long_thread(6)}) == "summarize"  # 24 messages
+    assert main.should_continue({"messages": _long_thread(2)}) == main.END
+
+
+def test_summarize_folds_old_turns_and_removes_them(monkeypatch):
+    fake = FakeModel("User asked q0-q3; nothing pending.")
+    monkeypatch.setattr(main, "summarizer_model", fake)
+    out = main.summarize_node({"messages": _long_thread(6), "summary": "Earlier: hello."})
+
+    assert out["summary"] == "User asked q0-q3; nothing pending."
+    removed = [m.id for m in out["messages"]]
+    assert removed == [f"{p}{i}" for i in range(4) for p in "hatr"]  # 4 whole turns, oldest first
+    rules, prompt = fake.seen[0][0], fake.seen[0][1].content
+    assert rules.type == "system"
+    assert "Earlier: hello." in prompt and "human: q0" in prompt and "q4" not in prompt
+
+
+def test_agent_sees_the_summary(monkeypatch):
+    fake = FakeModel("ok")
+    monkeypatch.setattr(main, "model_with_tools", fake)
+    main.agent_node({"messages": [HumanMessage("what did we do?")], "summary": "Logged irrigation for field-2."})
+    first = fake.seen[0][0]
+    assert first.type == "system" and "Logged irrigation for field-2." in first.content
+
+
+def _seed_threads(saver, n=2):
+    app = main.graph.compile(checkpointer=saver)
+    threads = []
+    for i in range(n):
+        thread = {"configurable": {"thread_id": f"mig-{uuid.uuid4()}"}}
+        app.update_state(thread, {"messages": [HumanMessage(f"hello {i}"), AIMessage(f"hi {i}")]}, as_node="agent")
+        app.update_state(thread, {"messages": [HumanMessage(f"again {i}"), AIMessage(f"yes {i}")]}, as_node="agent")
+        threads.append(thread)
+    return threads
+
+
+def _history(saver, thread):
+    return [m.content for m in main.graph.compile(checkpointer=saver).get_state(thread).values["messages"]]
+
+
+def test_copy_checkpoints_preserves_every_thread(tmp_path):
+    with main.open_checkpointer(f"sqlite:///{tmp_path / 'x.db'}", tmp_path / "src.db") as src, \
+         main.open_checkpointer(f"sqlite:///{tmp_path / 'x.db'}", tmp_path / "dst.db") as dst:
+        threads = _seed_threads(src)
+        copied = migrate_checkpoints.copy_checkpoints(src, dst)
+        assert copied == len(list(src.list(None)))
+        for thread in threads:
+            assert _history(dst, thread) == _history(src, thread)
+        migrate_checkpoints.copy_checkpoints(src, dst)  # re-running must not duplicate
+        assert len(list(dst.list(None))) == copied
+
+
+@pytest.mark.skipif(not main.DATABASE_URL.startswith("postgresql"), reason="DATABASE_URL is not Postgres")
+def test_copy_checkpoints_from_sqlite_into_postgres(tmp_path):
+    with main.open_checkpointer(f"sqlite:///{tmp_path / 'x.db'}", tmp_path / "src.db") as src, \
+         main.open_checkpointer() as dst:
+        threads = _seed_threads(src)
+        migrate_checkpoints.copy_checkpoints(src, dst)
+        assert _history(dst, threads[0]) == ["hello 0", "hi 0", "again 0", "yes 0"]
+        for thread in threads:
+            assert _history(dst, thread) == _history(src, thread)
 
 
 def _run_tool_turn(*calls):

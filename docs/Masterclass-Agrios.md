@@ -105,7 +105,7 @@ Every phase below is one real commit — this is the actual build order, not a r
 | 8 — LangGraph ↔ bridge integration | `863e5fd` | `spatial_tools.py`: `SubmitSpatialIntent` (Pydantic `args_schema`), `read_joint_states`; migrated `Pose6D` from placeholder Euler angles to `tvec`/`rvec` (a breaking ABI change, confirmed necessary before making it); added a second, independent shared-memory channel for joint telemetry | The Python agent and the C++ real-time loop become one system, verified end to end through a real `@tool` call into a real running RT process |
 | 9 — Two adversarial audits | `ac24fd0`, `96f5c6a` | Fixed a real `SIGTERM`-handling gap in both owner processes (bug #1: zero signal handling; bug #2: `SIGINT` only) that had been silently masked by every prior `docker run --rm` test; fixed a real `mmap()` prefault gap (`MAP_POPULATE` + explicit touch) and strengthened an ABI check from `sizeof`-only to per-field `offsetof`; correctly declined two other demanded "fixes" (`#pragma pack`, a busy-spin conversion) as regressions | Auditing your own system adversarially finds real bugs that verifying it optimistically doesn't — and refusing a wrong fix is as much the skill as finding a right one |
 **Current state, stated plainly:** two systems in one repo. The Python side: a single-file
-(~175-line) CLI agent, seven tools (three DB-backed, two fixture data, two crossing into the C++
+CLI agent, seven tools (three DB-backed, one live weather API, one fixture, two crossing into the C++
 bridge), one hardcoded `thread_id`, local-only inference, traced through a self-hosted Langfuse
 stack, checked by a 30-case suite now scoring 30/30 with all seven tools (28/30 before the
 weather fix — see Part 4). The C++ side: a lock-free SPSC ring buffer proven
@@ -309,18 +309,25 @@ walkthrough.
   the model calling both tools in one turn and guessing. A guard in `tool_node` now refuses
   that call, and any call with an empty required argument, so the model retries with real
   values (6/6 correct in live probes). Two full runs then scored 30/30. The fallow-field case
-  passed both times but is still about 50/50 in isolation, so it stays a watch item.
+  was still about 50/50 in isolation until `query_field_status` started adding a note to fallow
+  fields pointing at the calendar: 8/8 after that.
 - **The Postgres swap is tested now, for the farm data and the conversation history.** The
   schema is SQLAlchemy Core `Table`s, so each dialect emits its own auto-increment, and
   `DATABASE_URL` picks the database. The checkpointer follows the same setting:
   `open_checkpointer()` returns a `PostgresSaver` on the same database for a Postgres URL, and
   `SqliteSaver` on `checkpoints.db` otherwise. Against a real Postgres 17, all offline tests
   pass, including a conversation that survives a reconnect, and a CI job runs them on every
-  pull request. Not done: copying existing SQLite history into Postgres, and a live CLI session
-  on Postgres (the tests write checkpoints directly, without the model).
-- **`get_weather_forecast` and `lookup_crop_calendar` return fixture data.** Both are shaped so
-  a real API call could replace the body without touching the tool's interface — a deliberate
-  seam, not yet used.
+  pull request. `migrate_checkpoints.py` copies existing SQLite history across (on the real
+  `checkpoints.db`: 60 checkpoints, 3 threads, every message identical), and a live CLI turn on
+  Postgres loaded a migrated 33-message thread, answered, and summarized it.
+- **Weather is live; the crop calendar is still fixture data.** The seam got used for one tool:
+  `get_weather_forecast` calls Open-Meteo with the field's stored coordinates and flags
+  frost-risk days itself, because the model, left to judge, called a 10 °C minimum a frost
+  risk. `lookup_crop_calendar` still returns fixed windows; there's no free crop-calendar API
+  to swap in.
+- **Old turns are summarized, not just dropped.** Past 20 messages, a `summarize` node folds
+  all but the last ~10 into a running summary and removes them from state. It's lossy by
+  design, and costs one model call each time it runs.
 - **No session handling beyond a CLI flag.** `--thread` picks the `thread_id` (default `"1"`).
   Multi-user support still needs it to come from a login or session, not the command line.
 - **Token streaming works.** The CLI uses `app.stream(..., stream_mode="messages")` and prints
