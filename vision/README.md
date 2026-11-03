@@ -29,7 +29,7 @@ uv run python -m vision.eval.gate --manifest vision/eval/suites/phase1.json --ou
 
 ## Measured results (reference pipeline, synthetic fixtures)
 
-Same seeds on two platforms, Windows 11 and Linux x86-64 (Docker): the metrics agree to the last printed digit. Latency doesn't, and isn't expected to. Each control's corruption is seeded per sequence. arm64 runs in CI (`ubuntu-24.04-arm`), and its numbers are added here once a run has produced them.
+Same seeds on three platforms -- Windows 11, Linux x86-64 and Linux arm64 (both Debian containers; arm64 emulated under QEMU) -- and the metrics agree to the last printed digit. That includes the scene recall of exactly 3/4, the floor with no margin. Latency doesn't agree, and isn't expected to. Each control's corruption is seeded per sequence. CI repeats this on native arm64 (`ubuntu-24.04-arm`).
 
 | Suite | Metric | Intact | Noise control | Shuffle control | Gate bound |
 |---|---|---|---|---|---|
@@ -50,8 +50,9 @@ Reference pipeline frame latency (n = 1,500 frames, 320×240):
 | same, run 2 | 3.796 [3.735–3.847] | 6.829 | 8.568 | 13.944 |
 | same, run 3 | 3.566 [3.532–3.604] | 6.539 | 9.321 | 17.184 |
 | same CPU, Docker linux/amd64 (WSL2) | 2.515 [2.461–2.572] | 4.168 | 5.831 | 11.106 |
+| same CPU, Docker linux/arm64 under QEMU emulation | 172.031 [167.624–176.854] | 386.151 | 571.081 | 1019.491 |
 
-Runs 1–3 differ by up to 25% at p50 on the same machine. That is the laptop's power and thermal management, and it is why every latency figure here carries its machine stamp. It's also why no latency number is gated in CI.
+Runs 1–3 differ by up to 25% at p50 on the same machine. The arm64 row is instruction-set emulation, about 50× slower: it shows the metrics are architecture-independent, and says nothing about a Pi 5. That is the laptop's power and thermal management, and it is why every latency figure here carries its machine stamp. It's also why no latency number is gated in CI.
 
 **How to read these numbers:**
 - **The bounds are regression floors, not targets.** They are set from the measured run minus a margin (the scene recall bound has none), so a change that makes things worse fails CI.
