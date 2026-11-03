@@ -39,11 +39,27 @@ def no_network(monkeypatch):
     monkeypatch.setattr(main.httpx, "get", refuse)
 
 
+# Trimmed from FAO's real Chile response (api-cropcalendar.apps.fao.org), same shape.
+FAO_CL = [
+    {"lastUpdated": "26/02/2025", "crop": {"name": "Potato"}, "aez": {"name": "Mediterranean"},
+     "sessions": [{"early_sowing": {"day": 15, "month": 11}, "later_sowing": {"day": 15, "month": 2},
+                   "early_harvest": {"day": 15, "month": 3}, "late_harvest": {"day": 15, "month": 6}}]},
+    {"lastUpdated": "26/02/2025", "crop": {"name": "Potato"}, "aez": {"name": "Moist Temperate"},
+     "sessions": [{"early_sowing": {"day": 15, "month": 9}, "later_sowing": {"day": 15, "month": 11},
+                   "early_harvest": {"day": 15, "month": 3}, "late_harvest": {"day": 15, "month": 5}}]},
+    {"lastUpdated": "26/02/2025", "crop": {"name": "Wheat, bread"}, "aez": {"name": "Mediterranean"},
+     "sessions": [{"early_sowing": {"day": "1", "month": 5}, "later_sowing": {"day": "31", "month": 7},
+                   "early_harvest": {"day": 1, "month": 10}, "late_harvest": {"day": 31, "month": 1}}]},
+]
+
+
 @pytest.fixture
 def fake_open_meteo(monkeypatch):
     calls = []
     def get(url, params=None, timeout=None):
         calls.append((url, params))
+        if url == main.FAO_CROP_CALENDAR:
+            return FakeResponse(FAO_CL)
         if url == main.OPEN_METEO_GEOCODE:
             hits = [] if params["name"] == "Atlantis" else [
                 {"name": "Talca", "admin1": "Maule", "country": "Chile", "latitude": -35.43, "longitude": -71.67}]
@@ -71,7 +87,7 @@ def test_tools_return_json(fake_open_meteo):
     weather = json.loads(main.get_weather_forecast.invoke({"location": 'Bob\'s "field"'}))
     assert weather["location"] == 'Bob\'s "field"'
     crop = json.loads(main.lookup_crop_calendar.invoke({"crop": "potato", "region": "Chile"}))
-    assert crop["crop"] == "potato"
+    assert crop["crop"] == "Potato"
 
 
 def test_weather_for_a_field_uses_its_stored_coordinates(fake_open_meteo):
@@ -80,6 +96,8 @@ def test_weather_for_a_field_uses_its_stored_coordinates(fake_open_meteo):
     assert weather["forecast"][1] == {"date": "2026-11-03", "temp_max_c": 18.2, "temp_min_c": -0.5, "rain_mm": 4.2,
                                       "frost_risk": True}
     assert weather["forecast"][0]["frost_risk"] is False  # 6.0 °C minimum
+    assert weather["rain_days"] == ["2026-11-03"] and weather["total_rain_mm"] == 4.2
+    assert weather["frost_risk_days"] == ["2026-11-03"]
     (url, params), = fake_open_meteo  # no geocoding call for a known field
     assert url == main.OPEN_METEO_FORECAST
     assert (params["latitude"], params["longitude"], params["forecast_days"]) == (-34.17, -70.74, 2)
@@ -98,6 +116,27 @@ def test_weather_reports_errors_instead_of_inventing_data(fake_open_meteo, monke
     monkeypatch.setattr(main.httpx, "get", lambda *a, **k: FakeResponse({}, status=503))
     down = json.loads(main.get_weather_forecast.invoke({"location": "field-1"}))
     assert "Weather service unavailable" in down["error"]
+
+
+def test_crop_calendar_uses_fao_windows_for_the_zone(fake_open_meteo):
+    cal = json.loads(main.lookup_crop_calendar.invoke({"crop": "potatoes", "region": "central Chile"}))
+    assert cal["crop"] == "Potato" and cal["source"].startswith("FAO Crop Calendar")
+    assert cal["windows"] == [{"zone": "Mediterranean", "sowing": "15 Nov – 15 Feb", "harvest": "15 Mar – 15 Jun"}]
+
+    wheat = json.loads(main.lookup_crop_calendar.invoke({"crop": "wheat", "region": "Chile"}))
+    assert wheat["windows"] == [{"zone": "Mediterranean", "sowing": "1 May – 31 Jul", "harvest": "1 Oct – 31 Jan"}]
+
+    south = json.loads(main.lookup_crop_calendar.invoke({"crop": "potato", "region": "southern Chile"}))
+    assert [w["zone"] for w in south["windows"]] == ["Moist Temperate"]
+
+
+def test_crop_calendar_refuses_regions_and_crops_it_has_no_data_for(fake_open_meteo):
+    invented = json.loads(main.lookup_crop_calendar.invoke({"crop": "potato", "region": "Midwest USA"}))
+    assert "Chile only" in invented["error"]
+    assert not fake_open_meteo  # refused before calling FAO
+
+    unknown = json.loads(main.lookup_crop_calendar.invoke({"crop": "kiwi", "region": "central Chile"}))
+    assert "No FAO calendar entry" in unknown["error"] and "Potato" in unknown["crops_available"]
 
 
 def test_fallow_field_points_at_the_crop_calendar():
@@ -182,11 +221,22 @@ def test_long_thread_routes_to_summarize_and_short_one_ends():
 
 
 def test_summarize_folds_old_turns_and_removes_them(monkeypatch):
-    fake = FakeModel("User asked q0-q3; nothing pending.")
+    fake = FakeModel("- field-2 discussed; q3 unanswered")
     monkeypatch.setattr(main, "summarizer_model", fake)
-    out = main.summarize_node({"messages": _long_thread(6), "summary": "Earlier: hello."})
+    messages = _long_thread(6)
+    # Turns 1 and 2 logged tasks (current JSON reply, and the older text reply):
+    # both must reach the summary from the tool results, not from the model.
+    messages[6] = ToolMessage(json.dumps({"logged": True, "field_id": "field-2", "description": "irrigate"}),
+                              tool_call_id="c1", name="log_task", id="t1")
+    messages[10] = ToolMessage("Logged task for field-1: inspect", tool_call_id="c2", name="log_task", id="t2")
+    out = main.summarize_node({"messages": messages,
+                               "summary": "Earlier: hello.\nTasks logged: field-1: fertilize",
+                               "summary_tasks": ["field-1: fertilize"]})
 
-    assert out["summary"] == "User asked q0-q3; nothing pending."
+    assert out["summary"] == ("- field-2 discussed; q3 unanswered\n"
+                              "Tasks logged: field-1: fertilize; field-2: irrigate; field-1: inspect")
+    assert out["summary_tasks"] == ["field-1: fertilize", "field-2: irrigate", "field-1: inspect"]
+    assert "Tasks logged" not in fake.seen[0][1].content  # the model never sees the tasks line
     removed = [m.id for m in out["messages"]]
     assert removed == [f"{p}{i}" for i in range(4) for p in "hatr"]  # 4 whole turns, oldest first
     rules, prompt = fake.seen[0][0], fake.seen[0][1].content
@@ -265,9 +315,9 @@ def test_guard_rejects_empty_and_unknown_calls():
     assert "Unknown tool" in unknown["error"]
 
 
-def test_guard_lets_valid_calls_through():
+def test_guard_lets_valid_calls_through(fake_open_meteo):
     (calendar,) = _run_tool_turn(("lookup_crop_calendar", {"crop": "potato", "region": "central Chile"}))
-    assert calendar["crop"] == "potato"
+    assert calendar["crop"] == "Potato"
 
 
 def _trim(messages):

@@ -107,6 +107,7 @@ def init_db(db_engine=engine):
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     summary: NotRequired[str]
+    summary_tasks: NotRequired[list[str]]  # tasks folded into the summary so far
 
 # Once a thread passes SUMMARIZE_AFTER messages, everything but the most recent
 # KEEP_RECENT is folded into a running summary and removed from state, so old
@@ -137,6 +138,26 @@ def should_continue(state: AgentState):
         return "summarize"
     return END
 
+TASKS_PREFIX = "Tasks logged: "
+
+def logged_tasks(messages: list) -> list[str]:
+    """Tasks saved by log_task in these messages, read from its tool results
+    rather than left to the model, which filed its own suggestions as tasks.
+    Older histories hold the pre-JSON reply ("Logged task for field-1: ...")."""
+    tasks = []
+    for m in messages:
+        if not (isinstance(m, ToolMessage) and m.name == "log_task"):
+            continue
+        try:
+            result = json.loads(m.content)
+        except ValueError:
+            if m.content.startswith("Logged task for "):
+                tasks.append(m.content.removeprefix("Logged task for "))
+            continue
+        if isinstance(result, dict) and result.get("logged"):
+            tasks.append(f"{result['field_id']}: {result['description']}")
+    return tasks
+
 def summarize_node(state: AgentState) -> dict:
     messages = state["messages"]
     recent = trim_messages(messages, token_counter=len, max_tokens=KEEP_RECENT,
@@ -145,17 +166,24 @@ def summarize_node(state: AgentState) -> dict:
     if not dropped:
         return {}
     transcript = "\n".join(f"{m.type}: {m.content}" for m in dropped if m.content)
-    previous = state.get("summary", "")
+    # The tasks line is maintained in code, so the model never sees or rewrites it.
+    previous = "\n".join(line for line in state.get("summary", "").splitlines()
+                         if not line.startswith(TASKS_PREFIX))
     rules = SystemMessage(
         "You write the running summary of a farm-operations chat, as notes for the assistant, "
-        "not a reply to the user. Record only what was said: fields, crops, tasks logged, "
-        "decisions, and open questions, as short bullet points. Do not give advice, next steps, "
-        "greetings, or offers of help."
+        "not a reply to the user. Record only what was said: fields, places, crops, dates, "
+        "forecasts, decisions, and open questions, as short bullet points. Leave out tasks "
+        "logged; they are tracked separately. Do not give advice, next steps, greetings, or "
+        "offers of help."
     )
     prompt = f"Current summary: {previous or '(none)'}\n\nNew messages:\n{transcript}"
-    summary = summarizer_model.invoke([rules, HumanMessage(prompt)]).content
+    tasks = state.get("summary_tasks", []) + logged_tasks(dropped)
+    summary = summarizer_model.invoke([rules, HumanMessage(prompt)]).content.strip()
+    if tasks:
+        summary += f"\n{TASKS_PREFIX}{'; '.join(tasks)}"
     logger.info("summarize_node: folded %d messages into the summary", len(dropped))
-    return {"summary": summary, "messages": [RemoveMessage(id=m.id) for m in dropped]}
+    return {"summary": summary, "summary_tasks": tasks,
+            "messages": [RemoveMessage(id=m.id) for m in dropped]}
 
 
 init_db()
@@ -232,7 +260,13 @@ def get_weather_forecast(location: str, days:int=7) -> str:
             for d, hi, lo, rain in zip(daily["time"], daily["temperature_2m_max"],
                                        daily["temperature_2m_min"], daily["precipitation_sum"])
         ]
+        # Spelled out because the model misread the daily list once ("no rain"
+        # with rain in the forecast); reading a ready answer is harder to get wrong.
+        rain_days = [day["date"] for day in forecast if (day["rain_mm"] or 0) >= RAIN_DAY_MM]
         return json.dumps({"location": location, "resolved_to": place["name"],
+                           "rain_days": rain_days,
+                           "total_rain_mm": round(sum(day["rain_mm"] or 0 for day in forecast), 1),
+                           "frost_risk_days": [day["date"] for day in forecast if day["frost_risk"]],
                            "forecast": forecast, "source": "open-meteo.com"})
     except (httpx.HTTPError, KeyError, ValueError) as e:
         logger.exception("get_weather_forecast failed for %s", location)
@@ -241,6 +275,9 @@ def get_weather_forecast(location: str, days:int=7) -> str:
 # Air-temperature minimum at or below which a day counts as a frost risk;
 # ground frost can form a couple of degrees above 0 °C air temperature.
 FROST_RISK_C = 2.0
+# Daily total at or above which a day counts as a rain day (the usual
+# meteorological "wet day" threshold), so drizzle-level amounts don't.
+RAIN_DAY_MM = 1.0
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 
@@ -267,7 +304,60 @@ def _resolve_location(location: str) -> dict | None:
 def lookup_crop_calendar(crop: str, region: str) -> str:
     """Returns planting and harvest windows for a crop in a given region.
     Use when the user asks when to plant or harvest a specific crop."""
-    return json.dumps({"crop": crop, "region": region, "planting_window": {"start": "2024-04-01", "end": "2024-05-15"}, "harvest_window": {"start": "2024-09-01", "end": "2024-10-15"}})
+    zones = _zones_for_region(region)
+    if not zones:
+        return json.dumps({"error": f"No crop calendar for region {region!r}: the FAO calendar used here "
+                                    "covers Chile only (northern, central or southern Chile)."})
+    try:
+        resp = httpx.get(FAO_CROP_CALENDAR, params={"language": "en"}, timeout=15)
+        resp.raise_for_status()
+        entries = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.exception("lookup_crop_calendar failed for %s/%s", crop, region)
+        return json.dumps({"error": f"Crop calendar service unavailable: {e}"})
+
+    wanted = _normalize_crop(crop)
+    matches = [e for e in entries
+               if _normalize_crop(e["crop"]["name"]).startswith(wanted) and e["aez"]["name"] in zones]
+    if not matches:
+        known = sorted({e["crop"]["name"] for e in entries})
+        return json.dumps({"error": f"No FAO calendar entry for {crop!r} in {region!r}.", "crops_available": known})
+    windows = [
+        {"zone": e["aez"]["name"], "sowing": _window(s["early_sowing"], s["later_sowing"]),
+         "harvest": _window(s["early_harvest"], s["late_harvest"])}
+        for e in matches for s in e["sessions"]
+    ]
+    return json.dumps({"crop": matches[0]["crop"]["name"], "region": region, "windows": windows,
+                       "source": f"FAO Crop Calendar, Chile (updated {matches[0]['lastUpdated']})"})
+
+FAO_CROP_CALENDAR = "https://api-cropcalendar.apps.fao.org/api/v1/countries/CL/cropCalendar"
+# FAO splits Chile into agro-ecological zones; these map how people name the
+# regions onto them. Central Chile's climate is Mediterranean.
+_REGION_ZONES = [
+    (("north", "norte", "atacama", "arid"), "Arid Zone"),
+    (("central", "centro", "santiago", "maule", "higgins", "valparaíso", "valparaiso", "mediterranean"),
+     "Mediterranean"),
+    (("south", "sur", "araucan", "los lagos", "los ríos", "los rios", "biobío", "biobio", "temperate"),
+     "Moist Temperate"),
+]
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+def _zones_for_region(region: str) -> set[str]:
+    text = region.lower()
+    zones = {zone for keywords, zone in _REGION_ZONES if any(k in text for k in keywords)}
+    if not zones and "chile" in text:
+        zones = {zone for _, zone in _REGION_ZONES}  # "Chile" alone: every zone
+    return zones
+
+def _normalize_crop(name: str) -> str:
+    name = name.strip().lower()
+    for suffix in ("oes", "es", "s"):  # potatoes -> potat(o), beans -> bean
+        if name.endswith(suffix) and len(name) > len(suffix) + 2:
+            return name[: -len(suffix)]
+    return name
+
+def _window(start: dict, end: dict) -> str:
+    return f"{int(start['day'])} {_MONTHS[start['month'] - 1]} – {int(end['day'])} {_MONTHS[end['month'] - 1]}"
 
 @tool
 def query_field_status(field_id: str) -> str:
@@ -326,7 +416,7 @@ langfuse_handler = CallbackHandler()
 tools = [get_weather_forecast, lookup_crop_calendar, query_field_status, log_task, get_pending_tasks,
          submit_spatial_intent, read_joint_states]
 model_with_tools = model.bind_tools(tools)
-summarizer_model = model  # plain model, no tools: summaries are text only
+summarizer_model = model  # plain model, no tools: summaries are text
 tools_by_name = {t.name: t for t in tools}
 graph = StateGraph(AgentState)
 graph.add_node("agent", agent_node)

@@ -1,3 +1,4 @@
+import re
 import uuid
 import pytest
 from main import graph
@@ -118,3 +119,69 @@ def test_no_tool_needed(app, user_input):
         f"expected no tool calls, model called {[c['name'] for c in tool_calls]}"
     )
 
+
+
+# Faithfulness: the cases above check which tools were called, not whether the
+# final answer agrees with what they returned. These pin the forecast to known
+# data and check the answer against it. Added after a live run said "no rain"
+# for a forecast with rain on one day.
+class _Forecast:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def json(self):
+        return self.payload
+
+    def raise_for_status(self):
+        pass
+
+
+def _forecast(rain, lows):
+    return {"daily": {"time": ["2026-11-02", "2026-11-03", "2026-11-04"],
+                      "temperature_2m_max": [20.0, 17.0, 15.0], "temperature_2m_min": lows,
+                      "precipitation_sum": rain}}
+
+
+def _mentions_date(answer: str, day: int) -> bool:
+    """Whether the answer names 2026-11-<day> in any common form."""
+    text = answer.lower()
+    forms = [f"11-{day:02d}", f"11/{day:02d}", f"{day:02d}/11", f"november {day}", f"nov {day}",
+             f"nov. {day}", f"{day} november", f"{day} nov"]
+    return any(f in text for f in forms)
+
+
+FAITHFULNESS_CASES = [
+    ("Which days will it rain in field-1 over the next 3 days?",
+     _forecast(rain=[0.0, 12.5, 0.0], lows=[9.0, 8.0, 7.0]), 3),
+    ("Is there a frost risk for field-1 in the next 3 days? If so, on which day?",
+     _forecast(rain=[0.0, 0.0, 0.0], lows=[8.0, 5.0, -1.5]), 4),
+]
+
+@pytest.mark.parametrize(
+    "user_input,forecast,expected_day",
+    FAITHFULNESS_CASES,
+    ids=[c[0][:45] for c in FAITHFULNESS_CASES],
+)
+def test_answer_matches_forecast(app, monkeypatch, user_input, forecast, expected_day):
+    import main
+    monkeypatch.setattr(main.httpx, "get", lambda *a, **k: _Forecast(forecast))
+    result, tool_calls = run_agent(app, user_input)
+    assert "get_weather_forecast" in {c["name"] for c in tool_calls}
+    answer = result["messages"][-1].content
+    assert _mentions_date(answer, expected_day), f"answer doesn't name Nov {expected_day}: {answer!r}"
+
+
+def test_answer_reports_a_dry_forecast_as_dry(app, monkeypatch):
+    import main
+    monkeypatch.setattr(main.httpx, "get",
+                        lambda *a, **k: _Forecast(_forecast(rain=[0.0, 0.0, 0.0], lows=[9.0, 8.0, 7.0])))
+    result, _ = run_agent(app, "Will it rain in field-2 in the next 3 days?")
+    answer = result["messages"][-1].content.lower()
+    # A negation near "rain" in the same clause ("no expected rain", "rain is not
+    # forecast", "won't rain"), or "dry". A phrase list kept rejecting correct answers.
+    negation = r"\b(no|not|won't|isn't|aren't|without|unlikely|none)\b"
+    # [^.,;\n] keeps a match inside one clause: "rain on nov 3, no frost" is not dry.
+    dry = (re.search(negation + r"[^.,;\n]{0,30}\b(rain|precipitation|rainfall)", answer)
+           or re.search(r"\b(rain|precipitation|rainfall)\b[^.,;\n]{0,30}" + negation, answer)
+           or re.search(r"\bdry\b", answer))
+    assert dry, f"answer doesn't report the dry forecast: {answer!r}"
