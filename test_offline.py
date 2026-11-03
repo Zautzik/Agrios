@@ -220,22 +220,23 @@ def test_long_thread_routes_to_summarize_and_short_one_ends():
     assert main.should_continue({"messages": _long_thread(2)}) == main.END
 
 
-class FakeNotesModel(FakeModel):
-    def invoke(self, messages):
-        self.seen.append(messages)
-        return self.reply
-
-
 def test_summarize_folds_old_turns_and_removes_them(monkeypatch):
-    notes = main.ConversationNotes(fields_and_places=["field-2"], tasks_logged=["irrigate field-2"],
-                                   open_questions=["q3 unanswered"])
-    fake = FakeNotesModel(notes)
+    fake = FakeModel("- field-2 discussed; q3 unanswered")
     monkeypatch.setattr(main, "summarizer_model", fake)
-    out = main.summarize_node({"messages": _long_thread(6), "summary": "Earlier: hello."})
+    messages = _long_thread(6)
+    # Turns 1 and 2 logged tasks (current JSON reply, and the older text reply):
+    # both must reach the summary from the tool results, not from the model.
+    messages[6] = ToolMessage(json.dumps({"logged": True, "field_id": "field-2", "description": "irrigate"}),
+                              tool_call_id="c1", name="log_task", id="t1")
+    messages[10] = ToolMessage("Logged task for field-1: inspect", tool_call_id="c2", name="log_task", id="t2")
+    out = main.summarize_node({"messages": messages,
+                               "summary": "Earlier: hello.\nTasks logged: field-1: fertilize",
+                               "summary_tasks": ["field-1: fertilize"]})
 
-    # Rendered from the structure: empty sections are left out, nothing else is added.
-    assert out["summary"] == ("Fields and places: field-2\nTasks logged: irrigate field-2\n"
-                              "Open questions: q3 unanswered")
+    assert out["summary"] == ("- field-2 discussed; q3 unanswered\n"
+                              "Tasks logged: field-1: fertilize; field-2: irrigate; field-1: inspect")
+    assert out["summary_tasks"] == ["field-1: fertilize", "field-2: irrigate", "field-1: inspect"]
+    assert "Tasks logged" not in fake.seen[0][1].content  # the model never sees the tasks line
     removed = [m.id for m in out["messages"]]
     assert removed == [f"{p}{i}" for i in range(4) for p in "hatr"]  # 4 whole turns, oldest first
     rules, prompt = fake.seen[0][0], fake.seen[0][1].content

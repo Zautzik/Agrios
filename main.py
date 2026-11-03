@@ -9,7 +9,6 @@ from langgraph.graph import END
 from langchain_core.messages import (ToolMessage, AIMessageChunk, HumanMessage, SystemMessage,
                                      RemoveMessage, trim_messages)
 from typing import TypedDict, Annotated, NotRequired
-from pydantic import BaseModel, Field as PydanticField
 from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
 from langfuse.langchain import CallbackHandler
@@ -108,6 +107,7 @@ def init_db(db_engine=engine):
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     summary: NotRequired[str]
+    summary_tasks: NotRequired[list[str]]  # tasks folded into the summary so far
 
 # Once a thread passes SUMMARIZE_AFTER messages, everything but the most recent
 # KEEP_RECENT is folded into a running summary and removed from state, so old
@@ -138,21 +138,25 @@ def should_continue(state: AgentState):
         return "summarize"
     return END
 
-class ConversationNotes(BaseModel):
-    """What a summary may contain. Asking the model for this shape, rather
-    than free text, leaves no slot for the advice, "next steps", greetings and
-    offers of help it kept adding to prose summaries."""
-    fields_and_places: list[str] = PydanticField(default_factory=list, description="Fields or places discussed")
-    crops: list[str] = PydanticField(default_factory=list, description="Crops discussed, with any dates mentioned")
-    tasks_logged: list[str] = PydanticField(default_factory=list, description="Tasks the user logged or asked to log")
-    decisions: list[str] = PydanticField(default_factory=list, description="Decisions the user made")
-    open_questions: list[str] = PydanticField(default_factory=list, description="Questions still unanswered")
+TASKS_PREFIX = "Tasks logged: "
 
-    def render(self) -> str:
-        sections = [("Fields and places", self.fields_and_places), ("Crops", self.crops),
-                    ("Tasks logged", self.tasks_logged), ("Decisions", self.decisions),
-                    ("Open questions", self.open_questions)]
-        return "\n".join(f"{title}: {'; '.join(items)}" for title, items in sections if items)
+def logged_tasks(messages: list) -> list[str]:
+    """Tasks saved by log_task in these messages, read from its tool results
+    rather than left to the model, which filed its own suggestions as tasks.
+    Older histories hold the pre-JSON reply ("Logged task for field-1: ...")."""
+    tasks = []
+    for m in messages:
+        if not (isinstance(m, ToolMessage) and m.name == "log_task"):
+            continue
+        try:
+            result = json.loads(m.content)
+        except ValueError:
+            if m.content.startswith("Logged task for "):
+                tasks.append(m.content.removeprefix("Logged task for "))
+            continue
+        if isinstance(result, dict) and result.get("logged"):
+            tasks.append(f"{result['field_id']}: {result['description']}")
+    return tasks
 
 def summarize_node(state: AgentState) -> dict:
     messages = state["messages"]
@@ -162,15 +166,24 @@ def summarize_node(state: AgentState) -> dict:
     if not dropped:
         return {}
     transcript = "\n".join(f"{m.type}: {m.content}" for m in dropped if m.content)
-    previous = state.get("summary", "")
+    # The tasks line is maintained in code, so the model never sees or rewrites it.
+    previous = "\n".join(line for line in state.get("summary", "").splitlines()
+                         if not line.startswith(TASKS_PREFIX))
     rules = SystemMessage(
-        "You update the running notes of a farm-operations chat. Merge the current notes with "
-        "what the new messages say. Record only what was said; keep each item short."
+        "You write the running summary of a farm-operations chat, as notes for the assistant, "
+        "not a reply to the user. Record only what was said: fields, places, crops, dates, "
+        "forecasts, decisions, and open questions, as short bullet points. Leave out tasks "
+        "logged; they are tracked separately. Do not give advice, next steps, greetings, or "
+        "offers of help."
     )
-    prompt = f"Current notes:\n{previous or '(none)'}\n\nNew messages:\n{transcript}"
-    summary = summarizer_model.invoke([rules, HumanMessage(prompt)]).render()
+    prompt = f"Current summary: {previous or '(none)'}\n\nNew messages:\n{transcript}"
+    tasks = state.get("summary_tasks", []) + logged_tasks(dropped)
+    summary = summarizer_model.invoke([rules, HumanMessage(prompt)]).content.strip()
+    if tasks:
+        summary += f"\n{TASKS_PREFIX}{'; '.join(tasks)}"
     logger.info("summarize_node: folded %d messages into the summary", len(dropped))
-    return {"summary": summary, "messages": [RemoveMessage(id=m.id) for m in dropped]}
+    return {"summary": summary, "summary_tasks": tasks,
+            "messages": [RemoveMessage(id=m.id) for m in dropped]}
 
 
 init_db()
@@ -403,8 +416,7 @@ langfuse_handler = CallbackHandler()
 tools = [get_weather_forecast, lookup_crop_calendar, query_field_status, log_task, get_pending_tasks,
          submit_spatial_intent, read_joint_states]
 model_with_tools = model.bind_tools(tools)
-# No tools; replies are constrained to the ConversationNotes JSON schema.
-summarizer_model = model.with_structured_output(ConversationNotes)
+summarizer_model = model  # plain model, no tools: summaries are text
 tools_by_name = {t.name: t for t in tools}
 graph = StateGraph(AgentState)
 graph.add_node("agent", agent_node)
