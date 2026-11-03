@@ -256,3 +256,33 @@ Closed the software gaps that didn't need hardware: the two-process bridge on ar
 **Summaries: one approach tried and dropped.** To stop the stray "Next steps", the summary was switched to a JSON structure (places, what the user asked, facts given, open questions) and rendered in code. Live, on a copy of the real 33-message thread, advice and greetings disappeared (3/3), but the model misfiled facts: its own suggestions went under "tasks logged", an answer under "open questions", and one run lost the crop facts. Keeping facts is the summary's job, and the text version kept them 3/3, so the text version stayed. What survived from the attempt: tasks logged are now read from `log_task` results in code, in both the current JSON and the older text reply, and carried as their own line the model never sees. The text summaries still phrase some items as imperatives ("Plant…"), which is noise, not lost information.
 
 **Full eval:** 33/33: 32 in one full run (45m 30s on CPU, slowed by Docker holding RAM), and the dry-forecast case 5/5 on its own after fixing two bugs in that test. Its first version used 0.2 mm on one day and then failed the model for faithfully reporting 0.2 mm of rain; its first matcher rejected the correct "there is no expected rain".
+
+---
+
+Perception, Phase 1: the yardstick before the thing it measures.
+
+**Recon first, and it changed the plan.** Before writing any vision code I audited the repo, the dev box and every proposed dependency against its upstream licence. The audit turned up four things the plan had wrong:
+- Shift-GCN, listed as Apache-2.0, is actually CC BY-NC 4.0.
+- The laptop has no CUDA.
+- POSIX shared memory can't connect perception on Windows to a control loop on the Pi.
+- The RT loop keeps its last pose forever, so it has no fail-safe if perception dies.
+
+Re-reading the plan as a whole turned up a fifth: a staleness check comparing `Pose6D.timestamp_ns` with the Pi's clock would be comparing two different machines' monotonic clocks. The Pi-side ingest has to re-stamp each pose on arrival. All five are recorded in `vision/README.md`'s roadmap, so they can't get lost before Phase 6.
+
+**Why the harness comes first.** Every number this cell will ever report goes through `vision/eval`: MOTA/IDF1, false alarms per camera-day, GAI error, latency. If the harness is wrong, every later claim is wrong in a way nobody would see. So it's cross-checked against py-motmetrics to 1e-9 on fixtures that exercise every error type, and the test asserts those error types actually occur. Otherwise "agrees with the reference" could mean "both said zero".
+
+**Negative controls that bite.** The gate runs once on intact input and twice on corrupted input that keeps the same ground truth: pure noise, and the frames in shuffled order. Both must fail, and CI fails if either passes. The first noise run didn't fail the gate; it crashed it. No detections meant an empty hypothesis array, and `np.split` of an empty array returns one chunk rather than zero, so `zip(strict=True)` blew up. That bug would eventually have hit a camera covered at night. The control found it before any camera was involved.
+
+**The false alarm that wasn't a bug.** The first kinematic run had 3 false alarms in 3 camera-days, one per day, which was too regular to be chance. I looked at the positions around one: track 8 really was walking at 2.0–2.2 m/s for three seconds. With σ = 0.4 m/s per axis, P(speed > 2) = exp(−12.5) ≈ 4×10⁻⁶ per sample, which comes to about 5 exceedances a day across 8 tracks. The rule was firing correctly; the threshold just sat inside normal behaviour. Moving it to 2.5 m/s (tail ≈ 3×10⁻⁹) took it to zero false alarms, with surge recall still 33/33. This is the choice conformal calibration will make from data in Phase 4–5, done by hand once so I know what it's doing.
+
+**The rule of three sets the evidence bar.** Zero false alarms in T camera-days only supports FACD ≤ 3/T at 95%. Three synthetic camera-days give a bound of 0.9986. For a real camera it means three alarm-free recorded days before the README is allowed to say "≤ 1 false alarm per camera-day".
+
+**Same seeds, same numbers, different machines.** Windows and Linux x86-64 produce identical metrics to the last digit: MOTA 0.4963, IDF1 0.4587, GAI error 1.162. Latency is a different story. The same laptop measured p50 3.03 ms on one run and 3.80 ms on the next, which is why latency is reported with a machine stamp and never gated in CI.
+
+**A second pair of eyes, with no context.** A fresh reviewer re-derived the maths and confirmed it:
+- the batch hysteresis matched the streaming version on every sequence up to length 12;
+- the metrics matched py-motmetrics on 7,000 random fixtures with zero mismatches;
+- the Poisson bound gave the correct one-sided values.
+
+It also found that the gate could *pass by checking nothing*. A manifest with a suite but no criteria returned True, under the noise and shuffle controls as well, because `all([])` is True. That's now a failure. The controls now have to fail every suite, not just the gate overall. Tightening the validation also caught one of my own test fixtures: the cross-check's false positives all shared one id, which is the exact duplicate-id input the reviewer showed could push IDF1 to 4/3.
+
