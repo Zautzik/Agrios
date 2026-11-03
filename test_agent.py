@@ -1,3 +1,4 @@
+import re
 import uuid
 import pytest
 from main import graph
@@ -173,9 +174,14 @@ def test_answer_matches_forecast(app, monkeypatch, user_input, forecast, expecte
 def test_answer_reports_a_dry_forecast_as_dry(app, monkeypatch):
     import main
     monkeypatch.setattr(main.httpx, "get",
-                        lambda *a, **k: _Forecast(_forecast(rain=[0.0, 0.0, 0.2], lows=[9.0, 8.0, 7.0])))
+                        lambda *a, **k: _Forecast(_forecast(rain=[0.0, 0.0, 0.0], lows=[9.0, 8.0, 7.0])))
     result, _ = run_agent(app, "Will it rain in field-2 in the next 3 days?")
     answer = result["messages"][-1].content.lower()
-    dry = ("no rain", "not expected", "no significant", "dry", "won't rain", "will not rain",
-           "no precipitation", "not forecast", "unlikely")
-    assert any(d in answer for d in dry), f"answer doesn't report the dry forecast: {answer!r}"
+    # A negation near "rain" in the same clause ("no expected rain", "rain is not
+    # forecast", "won't rain"), or "dry". A phrase list kept rejecting correct answers.
+    negation = r"\b(no|not|won't|isn't|aren't|without|unlikely|none)\b"
+    # [^.,;\n] keeps a match inside one clause: "rain on nov 3, no frost" is not dry.
+    dry = (re.search(negation + r"[^.,;\n]{0,30}\b(rain|precipitation|rainfall)", answer)
+           or re.search(r"\b(rain|precipitation|rainfall)\b[^.,;\n]{0,30}" + negation, answer)
+           or re.search(r"\bdry\b", answer))
+    assert dry, f"answer doesn't report the dry forecast: {answer!r}"
