@@ -91,10 +91,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --all-groups
 
+      # vision/ and agrios/ (the shared service layer) are held to ruff and
+      # mypy --strict; mypy's file list lives in pyproject.toml.
       - name: Lint, format and types
         run: |
-          uv run ruff check vision
-          uv run ruff format --check vision
+          uv run ruff check vision agrios
+          uv run ruff format --check vision agrios
           uv run mypy
 
       - name: Gate on synthetic fixtures
