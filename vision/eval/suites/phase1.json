@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "sequences": [
+    {"id": "scene-calm", "source": {"kind": "scene", "seed": 101, "params": {}}},
+    {"id": "scene-surge", "source": {"kind": "scene", "seed": 102, "params": {"surge_s": 8.0}}},
+    {"id": "scene-illum-surge", "source": {"kind": "scene", "seed": 103,
+      "params": {"illumination_drop_s": 5.0, "surge_s": 12.0}}},
+    {"id": "scene-ir-shake-surge", "source": {"kind": "scene", "seed": 104,
+      "params": {"ir_switch_s": 6.0, "shake_px": 1.0, "surge_s": 13.0}}},
+    {"id": "scene-crowd-surge", "source": {"kind": "scene", "seed": 105,
+      "params": {"n_targets": 6, "surge_s": 10.0}}},
+
+    {"id": "kin-day-1", "source": {"kind": "kinematics", "seed": 201, "params": {}}},
+    {"id": "kin-day-2", "source": {"kind": "kinematics", "seed": 202, "params": {}}},
+    {"id": "kin-day-3", "source": {"kind": "kinematics", "seed": 203, "params": {}}},
+
+    {"id": "gait-sound", "source": {"kind": "gait", "seed": 301, "params": {}}},
+    {"id": "gait-mild", "source": {"kind": "gait", "seed": 302, "params": {"asymmetry": 0.1}}},
+    {"id": "gait-lame", "source": {"kind": "gait", "seed": 303,
+      "params": {"asymmetry": 0.25, "lame_limb": "RH"}}}
+  ],
+  "criteria": {
+    "scene": {"min_event_recall": 0.75, "max_false_alarms": 0, "min_mota": 0.40, "min_idf1": 0.35},
+    "kinematics": {"min_event_recall": 0.95, "max_facd_upper95": 1.0},
+    "gait": {"max_gai_error": 2.0}
+  }
+}

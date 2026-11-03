@@ -17,7 +17,42 @@ dependencies = [
     "psycopg[binary]>=3.3.6",
 ]
 
+[project.optional-dependencies]
+vision = [
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "scipy>=1.14",
+]
+
 [dependency-groups]
 dev = [
+    "motmetrics>=1.4",
+    "mypy>=1.18",
     "pytest>=9.1.1",
+    "ruff>=0.13",
 ]
+
+# Lint and type gates apply to vision/ only: it was written to them from the
+# start. The agent code predates them and isn't held to them yet.
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["cpp", "langfuse-server", "farm-ops-agent"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF", "NPY", "PT", "C4", "PIE", "PERF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["vision"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "motmetrics.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["vision.tests.*"]
+disallow_untyped_defs = false
+disallow_any_generics = false
