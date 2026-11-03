@@ -105,9 +105,9 @@ Every phase below is one real commit — this is the actual build order, not a r
 | 8 — LangGraph ↔ bridge integration | `863e5fd` | `spatial_tools.py`: `SubmitSpatialIntent` (Pydantic `args_schema`), `read_joint_states`; migrated `Pose6D` from placeholder Euler angles to `tvec`/`rvec` (a breaking ABI change, confirmed necessary before making it); added a second, independent shared-memory channel for joint telemetry | The Python agent and the C++ real-time loop become one system, verified end to end through a real `@tool` call into a real running RT process |
 | 9 — Two adversarial audits | `ac24fd0`, `96f5c6a` | Fixed a real `SIGTERM`-handling gap in both owner processes (bug #1: zero signal handling; bug #2: `SIGINT` only) that had been silently masked by every prior `docker run --rm` test; fixed a real `mmap()` prefault gap (`MAP_POPULATE` + explicit touch) and strengthened an ABI check from `sizeof`-only to per-field `offsetof`; correctly declined two other demanded "fixes" (`#pragma pack`, a busy-spin conversion) as regressions | Auditing your own system adversarially finds real bugs that verifying it optimistically doesn't — and refusing a wrong fix is as much the skill as finding a right one |
 **Current state, stated plainly:** two systems in one repo. The Python side: a single-file
-CLI agent, seven tools (three DB-backed, one live weather API, one fixture, two crossing into the C++
+CLI agent, seven tools (three DB-backed, two live APIs, two crossing into the C++
 bridge), one hardcoded `thread_id`, local-only inference, traced through a self-hosted Langfuse
-stack, checked by a 30-case suite now scoring 30/30 with all seven tools (28/30 before the
+stack, checked by a 33-case suite (33/33: 32 in one full run (45m 30s on CPU, slowed by Docker holding RAM), and the dry-forecast case 5/5 on its own after fixing two bugs in that test. Its first version used 0.2 mm on one day and then failed the model for faithfully reporting 0.2 mm of rain; its first matcher rejected the correct "there is no expected rain") (28/30 before the
 weather fix — see Part 4). The C++ side: a lock-free SPSC ring buffer proven
 correct under a 5,000,000-operation concurrent stress test, two independent shared-memory
 channels, a real-time thread hardened to PREEMPT_RT/ROS 2 discipline and verified live against a
@@ -320,14 +320,17 @@ walkthrough.
   pull request. `migrate_checkpoints.py` copies existing SQLite history across (on the real
   `checkpoints.db`: 60 checkpoints, 3 threads, every message identical), and a live CLI turn on
   Postgres loaded a migrated 33-message thread, answered, and summarized it.
-- **Weather is live; the crop calendar is still fixture data.** The seam got used for one tool:
-  `get_weather_forecast` calls Open-Meteo with the field's stored coordinates and flags
-  frost-risk days itself, because the model, left to judge, called a 10 °C minimum a frost
-  risk. `lookup_crop_calendar` still returns fixed windows; there's no free crop-calendar API
-  to swap in.
+- **Both data tools are live.** `get_weather_forecast` calls Open-Meteo with the field's stored
+  coordinates and flags frost-risk days and rain days itself, because the model, left to judge,
+  called a 10 °C minimum a frost risk and once said "no rain" for a rainy forecast.
+  `lookup_crop_calendar` calls FAO's Crop Calendar API for Chile, by agro-ecological zone. No
+  hand-made table was needed: FAO publishes the data. A region outside Chile gets an error,
+  which also turns the model's invented regions ("Midwest USA") into a visible failure.
 - **Old turns are summarized, not just dropped.** Past 20 messages, a `summarize` node folds
   all but the last ~10 into a running summary and removes them from state. It's lossy by
-  design, and costs one model call each time it runs.
+  design, and costs one model call each time it runs. Tasks logged are taken from `log_task`
+  results in code, not from the model. A fully structured summary (JSON fields) was tried
+  and dropped: it removed the stray advice, but the 7B model misfiled facts and lost some.
 - **No session handling beyond a CLI flag.** `--thread` picks the `thread_id` (default `"1"`).
   Multi-user support still needs it to come from a login or session, not the command line.
 - **Token streaming works.** The CLI uses `app.stream(..., stream_mode="messages")` and prints
@@ -1059,7 +1062,6 @@ convenient at catching.
 - Multi-user session handling — *a real `thread_id` source instead of a literal.*
 - Human-in-the-loop / interrupt patterns — *a natural next node type, given the graph is
   already built to add one.*
-- Re-running the 30-case eval suite now that the tool count changed from five to seven.
 - Actually running any part of the real-time bridge on a PREEMPT_RT-patched kernel with a
   genuinely isolated core — *the one verification this project structurally cannot do on its
   current dev machine, named as exactly that rather than implied to be done.*
