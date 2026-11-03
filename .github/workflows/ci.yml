@@ -88,6 +88,49 @@ jobs:
       - name: Test
         run: ctest --test-dir cpp/build --output-on-failure
 
+  # The two-process path the agent uses: the real RT loop in one process, the
+  # agent's spatial tools in a separate Python process, connected only by the
+  # shared-memory rings. TSan can't see across a process boundary, so this is
+  # checked by data instead: every joint sample must satisfy the waveform's
+  # sine identity (a torn read breaks it), and the loop's own count of poses
+  # received must equal what Python delivered. arm64 is the run that matters.
+  bridge-two-process:
+    name: bridge-two-process (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build the RT loop and the bridge library
+        run: |
+          cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build cpp/build -j --target motor_control_rt_loop agrios_bridge
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.8.22"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: RT loop in one process, agent tools in another
+        run: |
+          # umask 000 so the root-owned segments stay writable by the
+          # unprivileged Python process, as in a real deployment.
+          sudo sh -c 'umask 000; exec ./cpp/build/motor_control_rt_loop --priority 80 --core 1 \
+            --iterations 45000 --quiet --report /tmp/rt_report.json' &
+          loop_pid=$!
+          uv run python cpp/tests/two_process_bridge_test.py --report /tmp/rt_report.json --duration 20
+          wait $loop_pid
+          test -z "$(ls /dev/shm | grep agrios)"  # the loop cleaned up its segments
+
   # ThreadSanitizer on the SPSC stress test, and on rt_safety_test, which
   # drives the shared-memory bridge (shm_open/mmap-backed rings) and the
   # control step from several threads. Any data race report fails the job.
