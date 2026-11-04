@@ -15,6 +15,7 @@ from sqlalchemy import (
     Column,
     Engine,
     Float,
+    ForeignKey,
     Integer,
     MetaData,
     Table,
@@ -83,6 +84,56 @@ tasks_table = Table(
     Column("field_id", Text),
     Column("description", Text),
     Column("status", Text, server_default="pending"),
+)
+
+# Console tables. Timestamps are Unix seconds as floats: dialect-neutral, and the
+# comparisons they serve (idle timeout, lockout) are plain arithmetic.
+users_table = Table(
+    "users",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("username", Text, nullable=False, unique=True),
+    Column("password_hash", Text, nullable=False),  # argon2id, PHC string format
+    Column("role", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+)
+# Sessions live server-side so signing out, or deleting a user, ends them at
+# once; a signed cookie would stay valid until it expired. Only a hash of the
+# token is stored, so a copy of the database can't be used to sign in.
+sessions_table = Table(
+    "sessions",
+    metadata,
+    Column("token_hash", Text, primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("csrf_token", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("last_seen", Float, nullable=False),
+)
+login_attempts_table = Table(
+    "login_attempts",
+    metadata,
+    Column("username", Text, primary_key=True),
+    Column("client", Text, primary_key=True),
+    Column("failures", Integer, nullable=False),
+    Column("last_failure", Float, nullable=False),
+)
+# One JSON document per settings group; only values that differ from the
+# defaults need to be present, so new settings appear with their defaults.
+settings_table = Table(
+    "settings",
+    metadata,
+    Column("group_name", Text, primary_key=True),
+    Column("value", Text, nullable=False),
+)
+settings_changes_table = Table(
+    "settings_changes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("at", Float, nullable=False),
+    Column("username", Text, nullable=False),
+    Column("setting", Text, nullable=False),  # "group.field"
+    Column("old_value", Text, nullable=False),  # JSON
+    Column("new_value", Text, nullable=False),
 )
 
 SEED_FIELDS = [

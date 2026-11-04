@@ -64,3 +64,9 @@ def pending_tasks() -> list[Task]:
             .fetchall()
         )
     return [Task.model_validate(dict(r)) for r in rows]
+
+
+def list_fields() -> list[Field]:
+    with engine.connect() as conn:
+        rows = conn.execute(select(fields_table).order_by(fields_table.c.field_id)).mappings().fetchall()
+    return [Field.model_validate(dict(r)) for r in rows]

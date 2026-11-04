@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Sign in") }}{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>{{ _("Sign in") }}</h1>
+  {% include "_message.html" %}
+  {% if demo_credentials %}
+  <p class="hint"><span aria-hidden="true">ℹ</span> {{ _("Demo account: %(user)s / %(password)s", user=demo_credentials[0], password=demo_credentials[1]) }}</p>
+  {% endif %}
+  <form method="post" action="/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label for="username">{{ _("Username") }}</label>
+    <input id="username" name="username" autocomplete="username" autocapitalize="none" required value="{{ username or '' }}" autofocus>
+    <label for="password">{{ _("Password") }}</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit" class="primary">{{ _("Sign in") }}</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Today") }}{% endblock %}
+{% block content %}
+<h1>{{ _("Today") }}</h1>
+<div class="grid">
+  <section class="card" aria-labelledby="tasks-heading">
+    <h2 id="tasks-heading">{{ _("Pending tasks") }}</h2>
+    {% if tasks %}
+    <ul class="list">
+      {% for task in tasks %}
+      <li><span class="tag">{{ task.field_id }}</span> {{ task.description }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty"><span aria-hidden="true">✔</span> {{ _("Nothing pending.") }}</p>
+    {% endif %}
+  </section>
+  <section class="card" aria-labelledby="fields-heading">
+    <h2 id="fields-heading">{{ _("Fields") }}</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">{{ _("Field") }}</th><th scope="col">{{ _("Crop") }}</th><th scope="col">{{ _("Status") }}</th><th scope="col">{{ _("Region") }}</th></tr></thead>
+        <tbody>
+          {% for field in fields %}
+          <tr><td>{{ field.field_id }}</td><td>{{ field.crop or "—" }}</td><td>{{ field.status or "—" }}</td><td>{{ field.region or "—" }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+{% endblock %}
