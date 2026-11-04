@@ -32,7 +32,7 @@ dev = [
     "ruff>=0.13",
 ]
 
-# Lint and type gates apply to vision/ only: it was written to them from the
+# Lint and type gates apply to vision/ and agrios/: both were written to them from the
 # start. The agent code predates them and isn't held to them yet.
 [tool.ruff]
 line-length = 110
@@ -45,7 +45,7 @@ select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF", "NPY", "PT", "C4", "
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["vision"]
+files = ["vision", "agrios"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
@@ -53,6 +53,6 @@ module = ["scipy.*", "motmetrics.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["vision.tests.*"]
+module = ["vision.tests.*", "agrios.tests.*"]
 disallow_untyped_defs = false
 disallow_any_generics = false
