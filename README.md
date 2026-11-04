@@ -214,13 +214,28 @@ A CCTV perception cell is being built in phases. Phase 1, done, is the evaluatio
 
 Metrics, measured results and design decisions are in [vision/README.md](vision/README.md).
 
-A local web console covering both the farm assistant and perception is planned in [docs/console-plan.md](docs/console-plan.md).
-
 | Gate suite (reference pipeline, synthetic) | Intact | Noise | Shuffled |
 |---|---|---|---|
 | Kinematics: FACD, one-sided 95% upper (3 camera-days) | 0.9986 | 347.1 | 369.3 |
 | Scene: surge recall / MOTA | 0.75 / 0.496 | 0 / 0 | 0.5 / −0.203 |
 | Gait: max GAI error (points) | 1.16 | 23.6 | 4.95 |
+
+## Web console (`agrios/console/`, in progress)
+
+A local web app over the same services the chat agent calls, planned in [docs/console-plan.md](docs/console-plan.md). It covers the farm features now and perception later. Built so far:
+- first-run owner setup;
+- sign-in with argon2id and server-side sessions;
+- a Today page;
+- Settings generated from typed models, with validation, defaults, reset and a change log.
+
+To see every screen without a farm, use the demo, which runs on its own database:
+
+```
+uv sync --extra console
+uv run python -m agrios.console --demo
+```
+
+Then open http://localhost:8000 and sign in with the demo account shown on the page. By default it's reachable from this machine only; **Settings > Network & access** changes that. The security choices and their references are in the plan's C1b section.
 
 ## Stack
 

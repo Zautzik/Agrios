@@ -303,3 +303,29 @@ Console C1a: moving the farm logic out of the agent, without the model noticing.
 - Two-sided Fisher p ≈ 0.52: no detectable difference.
 
 The case passes about 4 times in 10 on either side. It's a real weakness of the agent (it answers harvest timing from memory when no field is named), not something the move introduced. Worth fixing on its own, with its own before/after numbers. The full run took 18.4 h instead of the usual 25–45 min because the laptop slept partway through, so its timing isn't comparable to earlier runs.
+
+
+---
+
+Console C1b: a console you can sign in to, and settings that change what the agent does.
+
+**What's there.** `python -m agrios.console` (or `--demo`, on its own database): first-run owner setup behind a one-time code printed in the terminal, sign-in, a Today page, and Settings. The settings forms are generated from Pydantic models, so limits, defaults and help text in the UI are the ones the server validates. Every change is logged with who, when, old and new. The farm thresholds now feed the agent's forecast tool on the next call; the golden snapshot is still byte-identical, because the defaults are the old constants.
+
+**Two things only a real browser showed.** Driving Edge through the save flow:
+- htmx's default settle step copies the `style` attribute, which the Content-Security-Policy (no inline styles) blocks. Recording each violation's source file pinned it on htmx, not on the antivirus that also rewrites pages on this machine, which I'd first suspected. One config change: 4 violations before, none after.
+- The browser's favicon request was a 404 that would have buried real errors.
+
+**The review found the security holes the tests didn't.** A fresh-context reviewer, with no stake in the design, verified two serious ones by experiment:
+- *Parallel guesses skipped the backoff.* Sign-in read the failure count, spent ~50 ms in argon2, then wrote. 40 simultaneous wrong passwords were all checked and none locked out. Sign-in checks are now serialised: 5 checked, 35 refused, and a test runs the same 40-thread experiment. Removing the lock makes it fail again (40 checked), so the test is a real control.
+- *DNS rebinding got past "this machine only".* A web page you visit can rebind its name to 127.0.0.1; your browser then connects from loopback with Host and Origin that match each other, passing the address check and CSRF. The Host header must now be an IP address, `localhost` or a name listed in Settings.
+
+It also found:
+- template text passed through `_()`, which newstyle gettext marks as safe HTML, so `<name>` in a help string reached the page as a raw tag;
+- an unreadable stored settings row that would 500 every page, the network guard included;
+- a float overflow after ~1,000 lockouts;
+- IPv6 ranges that a 0.0.0.0 listener can never receive, which the docs claimed;
+- tests that didn't run their negative path (the vendored-file hash check never compared a tampered file; logout had no missing-token case).
+
+All fixed, each with a test. One claim it raised was wrong: settings left behind by other tests can't reach the golden snapshot, because that runs in a subprocess on its own database. The console tests now clean up after themselves anyway.
+
+**Numbers.** 174 passed, 2 skipped (83 console tests); ruff and mypy --strict clean. Not yet run: the console tests on Postgres (the CI job will be the first), and a browser test in CI (C1d).
