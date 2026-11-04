@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Settings") }} · {{ _("About") }}{% endblock %}
+{% block content %}
+<h1>{{ _("Settings") }}</h1>
+<div class="settings">
+  {% include "_settings_nav.html" %}
+  <div class="settings-body">
+    <section class="card">
+      <h2>{{ _("Fixed by design") }}</h2>
+      <p>{{ _("These can't be changed here, on purpose: they protect people and the farm, and a setting could only ever weaken them.") }}</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">{{ _("Rule") }}</th><th scope="col">{{ _("Why") }}</th><th scope="col">{{ _("Status") }}</th></tr></thead>
+          <tbody>
+            <tr><td>{{ _("An alert needs at least 2 triggering frames within its window") }}</td><td>{{ _("A single frame is too easily a glitch, a shadow or a bird.") }}</td><td><span aria-hidden="true">✔</span> {{ _("Enforced in vision/alerts.py (AlertConfig)") }}</td></tr>
+            <tr><td>{{ _("The stack light goes amber within 250 ms if the controller goes silent") }}</td><td>{{ _("A failure must show faster than a person can walk into danger.") }}</td><td><span aria-hidden="true">○</span> {{ _("Planned: Arduino firmware, vision Phase 6") }}</td></tr>
+            <tr><td>{{ _("Controller heartbeat every 50 ms") }}</td><td>{{ _("Five beats fit inside the 250 ms limit, so one late beat never trips it.") }}</td><td><span aria-hidden="true">○</span> {{ _("Planned: vision Phase 6") }}</td></tr>
+            <tr><td>{{ _("An analytic can be armed only after 3 alarm-free camera-days") }}</td><td>{{ _("Fewer days can't show, with 95%% confidence, that false alarms stay under one a day.") }}</td><td><span aria-hidden="true">○</span> {{ _("Planned: console C3") }}</td></tr>
+            <tr><td>{{ _("Sign-in pauses after %(n)s wrong passwords, from %(s)s seconds doubling up to %(m)s minutes", n=auth.FREE_ATTEMPTS, s=auth.FIRST_LOCK_S | int, m=(auth.MAX_LOCK_S / 60) | int) }}</td><td>{{ _("Stops password guessing. Counted per device address, so a stranger's guesses can't lock you out of your own.") }}</td><td><span aria-hidden="true">✔</span> {{ _("Enforced") }}</td></tr>
+            <tr><td>{{ _("Passwords are at least %(n)s characters", n=auth.MIN_PASSWORD_LENGTH) }}</td><td>{{ _("NIST SP 800-63B-4's minimum for a password that is the only sign-in factor.") }}</td><td><span aria-hidden="true">✔</span> {{ _("Enforced") }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="card">
+      <h2>{{ _("About Agrios") }}</h2>
+      <p>{{ _("MIT licensed. Runs entirely on this machine and its local network, at no cost. The browser code it serves:") }}</p>
+      <ul class="list">
+        <li>htmx 2.0.11 · 0BSD · <a href="/static/vendor/htmx-LICENSE.txt">{{ _("licence") }}</a></li>
+      </ul>
+    </section>
+  </div>
+</div>
+{% endblock %}

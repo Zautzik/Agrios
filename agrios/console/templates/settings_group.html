@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Settings") }} · {{ groups[group] }}{% endblock %}
+{% block content %}
+<h1>{{ _("Settings") }}</h1>
+<div class="settings">
+  {% include "_settings_nav.html" %}
+  <div class="settings-body">
+    <section class="card" aria-labelledby="group-heading">
+      <h2 id="group-heading">{{ groups[group] }}</h2>
+      {% if errors %}
+      <div class="message error" role="alert"><span aria-hidden="true">✖</span> <strong>{{ _("Not saved.") }}</strong> {{ _("Fix the fields marked below; nothing was changed.") }}</div>
+      {% elif saved is not none %}
+      <div class="message ok" role="status">
+        <span aria-hidden="true">✔</span> <strong>{{ _("Saved.") }}</strong>
+        {% if not saved %}{{ _("Nothing had changed.") }}{% endif %}
+        {% if restart %}{{ _("Takes effect after a restart: %(names)s.", names=restart | join(", ")) }}{% endif %}
+      </div>
+      {% endif %}
+      {# novalidate: the server validates and explains every field in one pass, the
+         same way with or without JavaScript, instead of the browser stopping at the first. #}
+      <form method="post" action="/settings/{{ group }}" novalidate>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% for spec in specs %}
+        {% set err = errors.get(spec.name) %}
+        {% set described = "h-" ~ spec.name ~ (" e-" ~ spec.name if err else "") %}
+        <div class="setting{% if err %} invalid{% endif %}">
+          <label for="f-{{ spec.name }}">{{ spec.title }}</label>
+          {% if spec.widget == "select" %}
+          <select id="f-{{ spec.name }}" name="{{ spec.name }}" aria-describedby="{{ described }}" {% if err %}aria-invalid="true"{% endif %}>
+            {% for option in spec.options %}
+            <option value="{{ option }}" {% if values[spec.name] == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+          {% elif spec.widget == "lines" %}
+          <textarea id="f-{{ spec.name }}" name="{{ spec.name }}" rows="3" aria-describedby="{{ described }}" {% if err %}aria-invalid="true"{% endif %}>{{ values[spec.name] }}</textarea>
+          {% elif spec.widget == "number" %}
+          <input id="f-{{ spec.name }}" name="{{ spec.name }}" type="number" inputmode="decimal" value="{{ values[spec.name] }}" step="{{ spec.step }}" {% if spec.minimum is not none %}min="{{ spec.minimum }}"{% endif %} {% if spec.maximum is not none %}max="{{ spec.maximum }}"{% endif %} aria-describedby="{{ described }}" {% if err %}aria-invalid="true"{% endif %}>
+          {% else %}
+          <input id="f-{{ spec.name }}" name="{{ spec.name }}" value="{{ values[spec.name] }}" {% if spec.max_length %}maxlength="{{ spec.max_length }}"{% endif %} aria-describedby="{{ described }}" {% if err %}aria-invalid="true"{% endif %}>
+          {% endif %}
+          {% if err %}<p id="e-{{ spec.name }}" class="field-error"><span aria-hidden="true">✖</span> {{ err }}</p>{% endif %}
+          <p id="h-{{ spec.name }}" class="help">
+            {{ spec.description }}
+            <span class="meta">
+              {% if spec.minimum is not none and spec.maximum is not none %}{{ _("Allowed: %(lo)s to %(hi)s.", lo=spec.minimum, hi=spec.maximum) }}{% endif %}
+              {{ _("Default: %(value)s.", value=spec.default or _("blank")) }}
+              {% if spec.applies == "restart" %}<span class="badge"><span aria-hidden="true">↻</span> {{ _("restart needed") }}</span>{% endif %}
+            </span>
+          </p>
+          <button type="submit" class="link" formaction="/settings/{{ group }}/reset/{{ spec.name }}"
+                  aria-label="{{ _('Reset %(name)s to its default', name=spec.title) }}">{{ _("Reset to default") }}</button>
+        </div>
+        {% endfor %}
+        <button type="submit" class="primary">{{ _("Save") }}</button>
+      </form>
+    </section>
+    <section class="card" aria-labelledby="history-heading">
+      <h2 id="history-heading">{{ _("Recent changes") }}</h2>
+      {% if changes %}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th scope="col">{{ _("When") }}</th><th scope="col">{{ _("Who") }}</th><th scope="col">{{ _("Setting") }}</th><th scope="col">{{ _("From") }}</th><th scope="col">{{ _("To") }}</th></tr></thead>
+          <tbody>
+            {% for c in changes %}
+            <tr><td>{{ c.at | when }}</td><td>{{ c.username }}</td><td>{{ c.setting.split(".", 1)[1] }}</td><td>{{ change_value(c.old_value) }}</td><td>{{ change_value(c.new_value) }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="empty">{{ _("No changes yet: everything here is at its default.") }}</p>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

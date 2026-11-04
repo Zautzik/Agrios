@@ -18,6 +18,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The local web console (docs/console-plan.md). Licences checked upstream on
+# 2026-11-04: FastAPI MIT, uvicorn BSD-3, Jinja BSD-3, argon2-cffi MIT,
+# python-multipart Apache-2.0 (form parsing).
+console = [
+    "argon2-cffi>=25.1",
+    "fastapi>=0.162",
+    "jinja2>=3.1.6",
+    "python-multipart>=0.0.33",
+    "uvicorn>=0.54",
+]
 vision = [
     "numpy>=2.0",
     "opencv-python-headless>=4.10",
@@ -52,7 +62,14 @@ plugins = ["pydantic.mypy"]
 module = ["scipy.*", "motmetrics.*"]
 ignore_missing_imports = true
 
+# The agent module predates the gates (see the ruff note above); a test that
+# imports it shouldn't pull its errors into the strict check.
 [[tool.mypy.overrides]]
-module = ["vision.tests.*", "agrios.tests.*"]
+module = ["main", "spatial_tools"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["vision.tests.*", "agrios.tests.*", "agrios.console.tests.*"]
 disallow_untyped_defs = false
 disallow_any_generics = false
+warn_return_any = false  # Starlette's TestClient returns Any

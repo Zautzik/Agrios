@@ -23,6 +23,7 @@ import logging
 from agrios.db import (BASE_DIR, DATABASE_URL, ADDED_COLUMNS, SEED_FIELDS, engine, fields_table,  # noqa: F401
                        init_db, metadata, open_checkpointer, tasks_table)
 from agrios.services import calendar, farm, weather
+from agrios.services import settings as app_settings
 from agrios.services.calendar import FAO_CROP_CALENDAR  # noqa: F401
 from agrios.services.weather import (FROST_RISK_C, OPEN_METEO_FORECAST, OPEN_METEO_GEOCODE,  # noqa: F401
                                      RAIN_DAY_MM)
@@ -171,8 +172,16 @@ def get_weather_forecast(location: str, days:int=7) -> str:
     as "field-1" or a place name. Always call this tool for any question
     about weather, forecasts, rain, or frost risk; never answer weather
     from memory."""
+    # Read per call, so a threshold changed in the console applies to the next
+    # question. If the settings can't be read, the defaults still give an answer.
     try:
-        result = weather.forecast(location, days)
+        farm_settings = app_settings.load().farm
+    except SQLAlchemyError:
+        logger.exception("couldn't read settings; using the default thresholds")
+        farm_settings = app_settings.FarmSettings()
+    try:
+        result = weather.forecast(location, days, frost_risk_c=farm_settings.frost_risk_c,
+                                  rain_day_mm=farm_settings.rain_day_mm)
     except weather.LocationNotFoundError:
         return json.dumps({"error": f"Couldn't find a field or place called {location!r}."})
     except (httpx.HTTPError, KeyError, ValueError) as e:
@@ -241,7 +250,10 @@ def get_pending_tasks() -> str:
         return json.dumps({"error": f"Error retrieving pending tasks: {e}"})
     return json.dumps([{"field_id": t.field_id, "description": t.description} for t in tasks])
 
-model = ChatOllama(model="qwen2.5:7b")
+# The model and Ollama address are console settings, read once at startup;
+# a blank address leaves ChatOllama to use OLLAMA_HOST or its localhost default.
+_assistant = app_settings.load().assistant
+model = ChatOllama(model=_assistant.model, base_url=_assistant.ollama_url or None)
 langfuse_handler = CallbackHandler()
 tools = [get_weather_forecast, lookup_crop_calendar, query_field_status, log_task, get_pending_tasks,
          submit_spatial_intent, read_joint_states]
