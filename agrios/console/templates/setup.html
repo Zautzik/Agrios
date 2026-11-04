@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ _("First-time setup") }}{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>{{ _("Create the owner account") }}</h1>
+  {% if not setup_enabled %}
+  <p>{{ _("Setup works only while the console runs from its command window, which prints a one-time setup code. Start it with:") }}</p>
+  <pre><code>uv run python -m agrios.console</code></pre>
+  {% else %}
+  <p>{{ _("The owner can change every setting and, later, add accounts for other people. The setup code is printed in the window where the console was started: entering it proves you're at the console machine.") }}</p>
+  {% include "_message.html" %}
+  <form method="post" action="/setup">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="setup_code">{{ _("Setup code") }}</label>
+    <input id="setup_code" name="setup_code" autocomplete="off" required>
+    <label for="username">{{ _("Username") }}</label>
+    <input id="username" name="username" autocomplete="username" autocapitalize="none" required pattern="[a-z0-9._\-]{1,32}" aria-describedby="username-help" value="{{ username or '' }}">
+    <p id="username-help" class="help">{{ _("Lowercase letters, digits, dot, dash or underscore.") }}</p>
+    <label for="password">{{ _("Password") }}</label>
+    <input id="password" name="password" type="password" autocomplete="new-password" required minlength="15" maxlength="128" aria-describedby="password-help">
+    <p id="password-help" class="help">{{ _("At least 15 characters. A few unrelated words are long and easy to remember; no symbols required.") }}</p>
+    <label for="confirm">{{ _("Password again") }}</label>
+    <input id="confirm" name="confirm" type="password" autocomplete="new-password" required minlength="15" maxlength="128">
+    <button type="submit" class="primary">{{ _("Create account and sign in") }}</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

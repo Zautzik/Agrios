@@ -21,7 +21,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --all-extras --all-groups
 
       - name: Import check
         run: uv run python -c "import main"
@@ -59,10 +59,70 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --all-extras --all-groups
 
       - name: Offline tests against Postgres
         run: uv run pytest -q
+
+  # Perception harness (vision/): lint and strict typing, then the evaluation
+  # gate on seeded synthetic fixtures -- no real footage ever reaches CI. The
+  # gate's two negative controls (signal-free noise, shuffled time order) keep
+  # the ground truth but corrupt the input, and must FAIL, so a green gate
+  # can't mean it was passing on something other than what it measures.
+  # x86-64 and arm64: the Pi 5 target is arm64.
+  vision:
+    name: vision (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.8.22"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-extras --all-groups
+
+      # vision/ and agrios/ (the shared service layer) are held to ruff and
+      # mypy --strict; mypy's file list lives in pyproject.toml.
+      - name: Lint, format and types
+        run: |
+          uv run ruff check vision agrios
+          uv run ruff format --check vision agrios
+          uv run mypy
+
+      - name: Gate on synthetic fixtures
+        run: |
+          uv run python -m vision.eval.gate --manifest vision/eval/suites/phase1.json --out vision-results
+          cat vision-results/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # --expect-fail succeeds only if EVERY suite fails at least one check, so
+      # one suite catching the corruption can't cover for one that doesn't.
+      - name: "Negative controls: noise and shuffled input must fail every suite"
+        run: |
+          for control in noise shuffle; do
+            if ! uv run python -m vision.eval.gate --manifest vision/eval/suites/phase1.json \
+                 --out vision-results --control "$control" --expect-fail; then
+              echo "::error::a suite passed on $control input -- it is not measuring what it claims"
+              exit 1
+            fi
+            grep -q "FAIL (control: $control)" "vision-results/summary-$control.md"
+          done
+
+      - name: Keep the gate reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: vision-gate-${{ matrix.os }}
+          path: vision-results/
 
   # C++ bridge: build with warnings as errors and run the SPSC stress test on
   # both x86-64 and arm64. arm64 matters here: its memory model is weaker than
@@ -118,7 +178,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-groups
+        run: uv sync --all-extras --all-groups
 
       - name: RT loop in one process, agent tools in another
         run: |

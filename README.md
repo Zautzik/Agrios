@@ -203,6 +203,40 @@ after the `region` column, the tool-call guard, and live weather; before those, 
 The earlier 28/30 (5 tools, before these fixes) and the investigation behind it, including a
 cold-start hypothesis that got tested and killed, are in [NOTES.md](NOTES.md).
 
+## Perception harness (`vision/`)
+
+A CCTV perception cell is being built in phases. Phase 1, done, is the evaluation harness, built before any model exists:
+- MOTA and IDF1, cross-checked against py-motmetrics to 1e-9;
+- False Alarms per Camera-Day with an exact Poisson bound;
+- Gait Asymmetry Index error, and latency percentiles carrying a machine stamp;
+- seeded synthetic scenes, camera-day track streams and quadruped gaits;
+- a CI gate whose negative controls (noise input, shuffled time order) must fail every suite in it.
+
+Metrics, measured results and design decisions are in [vision/README.md](vision/README.md).
+
+| Gate suite (reference pipeline, synthetic) | Intact | Noise | Shuffled |
+|---|---|---|---|
+| Kinematics: FACD, one-sided 95% upper (3 camera-days) | 0.9986 | 347.1 | 369.3 |
+| Scene: surge recall / MOTA | 0.75 / 0.496 | 0 / 0 | 0.5 / −0.203 |
+| Gait: max GAI error (points) | 1.16 | 23.6 | 4.95 |
+
+## Web console (`agrios/console/`, in progress)
+
+A local web app over the same services the chat agent calls, planned in [docs/console-plan.md](docs/console-plan.md). It covers the farm features now and perception later. Built so far:
+- first-run owner setup;
+- sign-in with argon2id and server-side sessions;
+- a Today page;
+- Settings generated from typed models, with validation, defaults, reset and a change log.
+
+To see every screen without a farm, use the demo, which runs on its own database:
+
+```
+uv sync --extra console
+uv run python -m agrios.console --demo
+```
+
+Then open http://localhost:8000 and sign in with the demo account shown on the page. By default it's reachable from this machine only; **Settings > Network & access** changes that. The security choices and their references are in the plan's C1b section.
+
 ## Stack
 
 - [LangGraph](https://github.com/langchain-ai/langgraph) — agent control flow as an explicit graph
@@ -214,6 +248,7 @@ cold-start hypothesis that got tested and killed, are in [NOTES.md](NOTES.md).
 - [`uv`](https://github.com/astral-sh/uv) — Python dependency management
 - C++20, CMake, POSIX shared memory, `pthread` — the real-time bridge (`cpp/`), Linux/macOS only
 - Clang 20 function-effect analysis, LLVM RealtimeSanitizer, ThreadSanitizer, `cyclictest` + `stress-ng` — real-time verification, in CI on x86-64 and arm64
+- NumPy, SciPy, OpenCV (headless); py-motmetrics as the reference implementation; ruff + `mypy --strict` — the perception harness (`vision/`), installed with `uv sync --all-extras`
 
 Full build log → [NOTES.md](NOTES.md) &nbsp;·&nbsp; From-first-principles study guide → [docs/Masterclass-Agrios.md](docs/Masterclass-Agrios.md)
 
@@ -256,7 +291,7 @@ ctest --test-dir cpp/build --output-on-failure
 
 ## Known limitations
 
-- **No VLA/perception pipeline is wired in.** `submit_spatial_intent` is exercised today by an LLM tool call reasoning from natural language, not by a vision or learned-policy model — the bridge is producer-agnostic by design, but nothing in this repo currently produces `tvec`/`rvec` from vision.
+- **No VLA/perception pipeline is wired in yet.** `submit_spatial_intent` is exercised today by an LLM tool call reasoning from natural language, not by a vision or learned-policy model. The bridge is producer-agnostic by design, but nothing in this repo produces `tvec`/`rvec` from vision yet. `vision/` is at Phase 1: the harness that the perception models will be measured with, not the models.
 - **No real hardware, no real joints.** `JointState6` telemetry is a synthetic waveform published by the RT loop, a stand-in for real encoder feedback — there is no motor, encoder, or physical arm behind this yet.
 - **Latency figures so far come from stock-kernel CI VMs.** Real-time *safety* (no allocation, locks, blocking, or page faults in the loop) is platform-independent and verified above. An absolute worst-case latency is not: it belongs to a specific machine's kernel, firmware, and core isolation, so it's measured per machine with `cpp/tools/rt_validate.sh` on a PREEMPT_RT kernel. [cpp/README.md](cpp/README.md#measuring-latency-on-real-hardware) covers running it from a live USB without installing anything.
 - Both data tools need network access: weather from Open-Meteo, crop calendars from FAO. Without it they return an error. The FAO calendar covers Chile only, by agro-ecological zone (central Chile is FAO's Mediterranean zone); any other region gets an error rather than made-up dates.

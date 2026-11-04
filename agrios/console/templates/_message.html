@@ -1,0 +1,4 @@
+{# Status is never colour alone: each message has an icon and a word as well. #}
+{% if error %}
+<div class="message error" role="alert"><span aria-hidden="true">✖</span> <strong>{{ _("Problem:") }}</strong> {{ error }}</div>
+{% endif %}

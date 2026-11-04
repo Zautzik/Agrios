@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Settings") }} · {{ _("Data") }}{% endblock %}
+{% block content %}
+<h1>{{ _("Settings") }}</h1>
+<div class="settings">
+  {% include "_settings_nav.html" %}
+  <div class="settings-body">
+    <section class="card">
+      <h2>{{ _("Data") }}</h2>
+      <p>{{ _("Where Agrios keeps its data. Everything stays on this machine.") }}</p>
+      <dl class="facts">
+        <dt>{{ _("Farm database") }}</dt><dd><code>{{ database }}</code></dd>
+        <dt>{{ _("Assistant conversations") }}</dt><dd>{{ _("In the farm database on Postgres; otherwise in %(path)s.", path=base_dir ~ "/checkpoints.db") }}</dd>
+        <dt>{{ _("Camera footage and keyframes") }}</dt><dd>{{ _("Not collected yet. Once cameras are connected, footage goes in data/, which git ignores, and expires after a retention period you set here.") }}</dd>
+      </dl>
+      <p class="help">{{ _("To move the farm database, set DATABASE_URL in the .env file and restart. The address above is shown without its password.") }}</p>
+    </section>
+  </div>
+</div>
+{% endblock %}

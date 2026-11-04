@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {# No eval, no injected <style>, and "style" left out of the attributes htmx copies while settling a
+     swap (its default list includes it), so the Content-Security-Policy needs no exceptions.
+     Every response is swapped, errors included: a 422 carries the form with its messages. #}
+  <meta name="htmx-config" content='{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false, "attributesToSettle": ["class", "width", "height"], "responseHandling": [{"code": "204", "swap": false}, {"code": ".*", "swap": true}]}'>
+  <title>{% block title %}{% endblock %} · {{ farm_name }}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/vendor/htmx-2.0.11.min.js" defer></script>
+</head>
+<body hx-boost="true">
+  <a class="skip-link" href="#main">{{ _("Skip to content") }}</a>
+  {% if demo %}
+  <div class="demo-banner" role="note">
+    <span aria-hidden="true">◆</span> {{ _("Demo data: a separate database with sample fields and tasks, reset every time the demo starts.") }}
+  </div>
+  {% endif %}
+  <header class="topbar">
+    <a class="brand" href="/">{{ _("Agrios") }} <span class="farm-name">{{ farm_name }}</span></a>
+    {% if session %}
+    <nav aria-label="{{ _('Main') }}">
+      <a href="/" {% if path == "/" %}aria-current="page"{% endif %}>{{ _("Today") }}</a>
+      {% if session.user.role == "owner" %}
+      <a href="/settings" {% if path.startswith("/settings") %}aria-current="page"{% endif %}>{{ _("Settings") }}</a>
+      {% endif %}
+    </nav>
+    <form method="post" action="/logout" class="signout">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <span class="who">{{ session.user.username }}</span>
+      <button type="submit" class="link">{{ _("Sign out") }}</button>
+    </form>
+    {% endif %}
+  </header>
+  <main id="main" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

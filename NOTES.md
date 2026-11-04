@@ -256,3 +256,76 @@ Closed the software gaps that didn't need hardware: the two-process bridge on ar
 **Summaries: one approach tried and dropped.** To stop the stray "Next steps", the summary was switched to a JSON structure (places, what the user asked, facts given, open questions) and rendered in code. Live, on a copy of the real 33-message thread, advice and greetings disappeared (3/3), but the model misfiled facts: its own suggestions went under "tasks logged", an answer under "open questions", and one run lost the crop facts. Keeping facts is the summary's job, and the text version kept them 3/3, so the text version stayed. What survived from the attempt: tasks logged are now read from `log_task` results in code, in both the current JSON and the older text reply, and carried as their own line the model never sees. The text summaries still phrase some items as imperatives ("Plant…"), which is noise, not lost information.
 
 **Full eval:** 33/33: 32 in one full run (45m 30s on CPU, slowed by Docker holding RAM), and the dry-forecast case 5/5 on its own after fixing two bugs in that test. Its first version used 0.2 mm on one day and then failed the model for faithfully reporting 0.2 mm of rain; its first matcher rejected the correct "there is no expected rain".
+
+---
+
+Perception, Phase 1: the yardstick before the thing it measures.
+
+**Recon first, and it changed the plan.** Before writing any vision code I audited the repo, the dev box and every proposed dependency against its upstream licence. The audit turned up four things the plan had wrong:
+- Shift-GCN, listed as Apache-2.0, is actually CC BY-NC 4.0.
+- The laptop has no CUDA.
+- POSIX shared memory can't connect perception on Windows to a control loop on the Pi.
+- The RT loop keeps its last pose forever, so it has no fail-safe if perception dies.
+
+Re-reading the plan as a whole turned up a fifth: a staleness check comparing `Pose6D.timestamp_ns` with the Pi's clock would be comparing two different machines' monotonic clocks. The Pi-side ingest has to re-stamp each pose on arrival. All five are recorded in `vision/README.md`'s roadmap, so they can't get lost before Phase 6.
+
+**Why the harness comes first.** Every number this cell will ever report goes through `vision/eval`: MOTA/IDF1, false alarms per camera-day, GAI error, latency. If the harness is wrong, every later claim is wrong in a way nobody would see. So it's cross-checked against py-motmetrics to 1e-9 on fixtures that exercise every error type, and the test asserts those error types actually occur. Otherwise "agrees with the reference" could mean "both said zero".
+
+**Negative controls that bite.** The gate runs once on intact input and twice on corrupted input that keeps the same ground truth: pure noise, and the frames in shuffled order. Both must fail, and CI fails if either passes. The first noise run didn't fail the gate; it crashed it. No detections meant an empty hypothesis array, and `np.split` of an empty array returns one chunk rather than zero, so `zip(strict=True)` blew up. That bug would eventually have hit a camera covered at night. The control found it before any camera was involved.
+
+**The false alarm that wasn't a bug.** The first kinematic run had 3 false alarms in 3 camera-days, one per day, which was too regular to be chance. I looked at the positions around one: track 8 really was walking at 2.0–2.2 m/s for three seconds. With σ = 0.4 m/s per axis, P(speed > 2) = exp(−12.5) ≈ 4×10⁻⁶ per sample, which comes to about 5 exceedances a day across 8 tracks. The rule was firing correctly; the threshold just sat inside normal behaviour. Moving it to 2.5 m/s (tail ≈ 3×10⁻⁹) took it to zero false alarms, with surge recall still 33/33. This is the choice conformal calibration will make from data in Phase 4–5, done by hand once so I know what it's doing.
+
+**The rule of three sets the evidence bar.** Zero false alarms in T camera-days only supports FACD ≤ 3/T at 95%. Three synthetic camera-days give a bound of 0.9986. For a real camera it means three alarm-free recorded days before the README is allowed to say "≤ 1 false alarm per camera-day".
+
+**Same seeds, same numbers, different machines.** Windows and Linux x86-64 produce identical metrics to the last digit: MOTA 0.4963, IDF1 0.4587, GAI error 1.162. Latency is a different story. The same laptop measured p50 3.03 ms on one run and 3.80 ms on the next, which is why latency is reported with a machine stamp and never gated in CI.
+
+**A second pair of eyes, with no context.** A fresh reviewer re-derived the maths and confirmed it:
+- the batch hysteresis matched the streaming version on every sequence up to length 12;
+- the metrics matched py-motmetrics on 7,000 random fixtures with zero mismatches;
+- the Poisson bound gave the correct one-sided values.
+
+It also found that the gate could *pass by checking nothing*. A manifest with a suite but no criteria returned True, under the noise and shuffle controls as well, because `all([])` is True. That's now a failure. The controls now have to fail every suite, not just the gate overall. Tightening the validation also caught one of my own test fixtures: the cross-check's false positives all shared one id, which is the exact duplicate-id input the reviewer showed could push IDF1 to 4/3.
+
+
+---
+
+Console C1a: moving the farm logic out of the agent, without the model noticing.
+
+**Snapshot first, then move.** Before touching any code I recorded what the tools present to the model: every tool's name, description and argument schema, and its exact output for 13 calls, with the network faked and a fresh database. That baseline was committed on its own, ahead of the refactor. After the logic moved into `agrios/services/`, the snapshot matched byte for byte. Two details made that hold:
+- **Serialisation:** the wrappers keep `json.dumps(model.model_dump())` rather than Pydantic's own JSON, because the two differ in separators and in escaping non-ASCII (the en dash in "15 Nov – 15 Feb").
+- **Number types:** temperatures are typed `int | float`, so a whole number from Open-Meteo doesn't quietly become `21.0`.
+
+**A commit I had to fix.** The first C1a commit went in with four failing tests. Piping pytest into `tail` discarded its exit code, and in the full suite those tests passed only because an earlier test imported `main.py`, whose import-time `init_db()` created the tables. Run on their own, they failed. The tests now create their own schema. The lesson: check the exit code you think you're checking, and run new tests in isolation as well as in the suite.
+
+**The live eval: 32/33, and the miss isn't the refactor.** The one failure was *"When can I harvest the potatoes I'm growing?"*: the model answered without calling the calendar. The golden snapshot already shows the model sees identical tools, but the eval is about behaviour, so I ran that case 5 times on each side, alternating to cancel drift.
+- Refactored: 3/5.
+- Pre-refactor: 1/5.
+- Two-sided Fisher p ≈ 0.52: no detectable difference.
+
+The case passes about 4 times in 10 on either side. It's a real weakness of the agent (it answers harvest timing from memory when no field is named), not something the move introduced. Worth fixing on its own, with its own before/after numbers. The full run took 18.4 h instead of the usual 25–45 min because the laptop slept partway through, so its timing isn't comparable to earlier runs.
+
+
+---
+
+Console C1b: a console you can sign in to, and settings that change what the agent does.
+
+**What's there.** `python -m agrios.console` (or `--demo`, on its own database): first-run owner setup behind a one-time code printed in the terminal, sign-in, a Today page, and Settings. The settings forms are generated from Pydantic models, so limits, defaults and help text in the UI are the ones the server validates. Every change is logged with who, when, old and new. The farm thresholds now feed the agent's forecast tool on the next call; the golden snapshot is still byte-identical, because the defaults are the old constants.
+
+**Two things only a real browser showed.** Driving Edge through the save flow:
+- htmx's default settle step copies the `style` attribute, which the Content-Security-Policy (no inline styles) blocks. Recording each violation's source file pinned it on htmx, not on the antivirus that also rewrites pages on this machine, which I'd first suspected. One config change: 4 violations before, none after.
+- The browser's favicon request was a 404 that would have buried real errors.
+
+**The review found the security holes the tests didn't.** A fresh-context reviewer, with no stake in the design, verified two serious ones by experiment:
+- *Parallel guesses skipped the backoff.* Sign-in read the failure count, spent ~50 ms in argon2, then wrote. 40 simultaneous wrong passwords were all checked and none locked out. Sign-in checks are now serialised: 5 checked, 35 refused, and a test runs the same 40-thread experiment. Removing the lock makes it fail again (40 checked), so the test is a real control.
+- *DNS rebinding got past "this machine only".* A web page you visit can rebind its name to 127.0.0.1; your browser then connects from loopback with Host and Origin that match each other, passing the address check and CSRF. The Host header must now be an IP address, `localhost` or a name listed in Settings.
+
+It also found:
+- template text passed through `_()`, which newstyle gettext marks as safe HTML, so `<name>` in a help string reached the page as a raw tag;
+- an unreadable stored settings row that would 500 every page, the network guard included;
+- a float overflow after ~1,000 lockouts;
+- IPv6 ranges that a 0.0.0.0 listener can never receive, which the docs claimed;
+- tests that didn't run their negative path (the vendored-file hash check never compared a tampered file; logout had no missing-token case).
+
+All fixed, each with a test. One claim it raised was wrong: settings left behind by other tests can't reach the golden snapshot, because that runs in a subprocess on its own database. The console tests now clean up after themselves anyway.
+
+**Numbers.** 174 passed, 2 skipped (83 console tests); ruff and mypy --strict clean. Not yet run: the console tests on Postgres (the CI job will be the first), and a browser test in CI (C1d).

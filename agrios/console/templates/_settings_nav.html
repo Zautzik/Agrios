@@ -1,0 +1,7 @@
+{# Labels, titles and descriptions come from Python and are printed escaped, never through _():
+   newstyle gettext marks its argument as safe HTML, which is only right for literals in templates. #}
+<nav class="settings-nav" aria-label="{{ _('Settings sections') }}">
+  {% for key, label in groups.items() %}
+  <a href="/settings/{{ key }}" {% if key == group %}aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>

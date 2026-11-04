@@ -1,0 +1,208 @@
+{
+  "calls": [
+    {
+      "args": {
+        "field_id": "field-1"
+      },
+      "output": "{\"field_id\": \"field-1\", \"crop\": \"potato\", \"status\": \"growing\", \"region\": \"central Chile\", \"latitude\": -34.17, \"longitude\": -70.74}",
+      "tool": "query_field_status"
+    },
+    {
+      "args": {
+        "field_id": "field-2"
+      },
+      "output": "{\"field_id\": \"field-2\", \"crop\": \"wheat\", \"status\": \"fallow\", \"region\": \"central Chile\", \"latitude\": -34.58, \"longitude\": -70.99, \"note\": \"Fallow: crop is the field's planned crop. For planting or harvest timing, call lookup_crop_calendar with this crop and region.\"}",
+      "tool": "query_field_status"
+    },
+    {
+      "args": {
+        "field_id": "field-99"
+      },
+      "output": "{\"error\": \"No field found with id field-99\"}",
+      "tool": "query_field_status"
+    },
+    {
+      "args": {
+        "description": "irrigate \"north\" rows",
+        "field_id": "field-2"
+      },
+      "output": "{\"logged\": true, \"field_id\": \"field-2\", \"description\": \"irrigate \\\"north\\\" rows\"}",
+      "tool": "log_task"
+    },
+    {
+      "args": {
+        "description": "inspect for blight",
+        "field_id": "field-1"
+      },
+      "output": "{\"logged\": true, \"field_id\": \"field-1\", \"description\": \"inspect for blight\"}",
+      "tool": "log_task"
+    },
+    {
+      "args": {},
+      "output": "[{\"field_id\": \"field-2\", \"description\": \"irrigate \\\"north\\\" rows\"}, {\"field_id\": \"field-1\", \"description\": \"inspect for blight\"}]",
+      "tool": "get_pending_tasks"
+    },
+    {
+      "args": {
+        "days": 2,
+        "location": "field-1"
+      },
+      "output": "{\"location\": \"field-1\", \"resolved_to\": \"field-1\", \"rain_days\": [\"2026-11-03\"], \"total_rain_mm\": 4.2, \"frost_risk_days\": [\"2026-11-03\"], \"forecast\": [{\"date\": \"2026-11-02\", \"temp_max_c\": 21.1, \"temp_min_c\": 6.0, \"rain_mm\": 0.0, \"frost_risk\": false}, {\"date\": \"2026-11-03\", \"temp_max_c\": 18.2, \"temp_min_c\": -0.5, \"rain_mm\": 4.2, \"frost_risk\": true}], \"source\": \"open-meteo.com\"}",
+      "tool": "get_weather_forecast"
+    },
+    {
+      "args": {
+        "days": 99,
+        "location": "Talca"
+      },
+      "output": "{\"location\": \"Talca\", \"resolved_to\": \"Talca, Maule, Chile\", \"rain_days\": [\"2026-11-03\"], \"total_rain_mm\": 4.2, \"frost_risk_days\": [\"2026-11-03\"], \"forecast\": [{\"date\": \"2026-11-02\", \"temp_max_c\": 21.1, \"temp_min_c\": 6.0, \"rain_mm\": 0.0, \"frost_risk\": false}, {\"date\": \"2026-11-03\", \"temp_max_c\": 18.2, \"temp_min_c\": -0.5, \"rain_mm\": 4.2, \"frost_risk\": true}], \"source\": \"open-meteo.com\"}",
+      "tool": "get_weather_forecast"
+    },
+    {
+      "args": {
+        "location": "Atlantis"
+      },
+      "output": "{\"error\": \"Couldn't find a field or place called 'Atlantis'.\"}",
+      "tool": "get_weather_forecast"
+    },
+    {
+      "args": {
+        "crop": "potatoes",
+        "region": "central Chile"
+      },
+      "output": "{\"crop\": \"Potato\", \"region\": \"central Chile\", \"windows\": [{\"zone\": \"Mediterranean\", \"sowing\": \"15 Nov \\u2013 15 Feb\", \"harvest\": \"15 Mar \\u2013 15 Jun\"}], \"source\": \"FAO Crop Calendar, Chile (updated 26/02/2025)\"}",
+      "tool": "lookup_crop_calendar"
+    },
+    {
+      "args": {
+        "crop": "wheat",
+        "region": "southern Chile"
+      },
+      "output": "{\"crop\": \"Wheat, bread\", \"region\": \"southern Chile\", \"windows\": [{\"zone\": \"Moist Temperate\", \"sowing\": \"1 May \\u2013 31 Jul\", \"harvest\": \"1 Oct \\u2013 31 Jan\"}], \"source\": \"FAO Crop Calendar, Chile (updated 26/02/2025)\"}",
+      "tool": "lookup_crop_calendar"
+    },
+    {
+      "args": {
+        "crop": "kiwi",
+        "region": "central Chile"
+      },
+      "output": "{\"error\": \"No FAO calendar entry for 'kiwi' in 'central Chile'.\", \"crops_available\": [\"Potato\", \"Wheat, bread\"]}",
+      "tool": "lookup_crop_calendar"
+    },
+    {
+      "args": {
+        "crop": "potato",
+        "region": "Midwest USA"
+      },
+      "output": "{\"error\": \"No crop calendar for region 'Midwest USA': the FAO calendar used here covers Chile only (northern, central or southern Chile).\"}",
+      "tool": "lookup_crop_calendar"
+    }
+  ],
+  "tools": [
+    {
+      "args": {
+        "days": {
+          "default": 7,
+          "title": "Days",
+          "type": "integer"
+        },
+        "location": {
+          "title": "Location",
+          "type": "string"
+        }
+      },
+      "description": "Returns the weather forecast (daily temperature, rain, and a\n    frost_risk flag per day) for a field or place over the next N days.\n    location can be a field_id such\n    as \"field-1\" or a place name. Always call this tool for any question\n    about weather, forecasts, rain, or frost risk; never answer weather\n    from memory.",
+      "name": "get_weather_forecast"
+    },
+    {
+      "args": {
+        "crop": {
+          "title": "Crop",
+          "type": "string"
+        },
+        "region": {
+          "title": "Region",
+          "type": "string"
+        }
+      },
+      "description": "Returns planting and harvest windows for a crop in a given region.\n    Use when the user asks when to plant or harvest a specific crop.",
+      "name": "lookup_crop_calendar"
+    },
+    {
+      "args": {
+        "field_id": {
+          "title": "Field Id",
+          "type": "string"
+        }
+      },
+      "description": "Returns the crop, status and region for a given field_id. field_id must match\nthe format \"field-<n>\", e.g. \"field-1\" or \"field-2\".",
+      "name": "query_field_status"
+    },
+    {
+      "args": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "field_id": {
+          "title": "Field Id",
+          "type": "string"
+        }
+      },
+      "description": "Logs a pending task for a field. Use when the user wants to record\n    a future action like irrigating, fertilizing, or inspecting for a given field_id. field_id must match\nthe format \"field-<n>\", e.g. \"field-1\" or \"field-2\".",
+      "name": "log_task"
+    },
+    {
+      "args": {},
+      "description": "Returns all tasks currently pending across all fields.",
+      "name": "get_pending_tasks"
+    },
+    {
+      "args": {
+        "rvec": {
+          "description": "Rodrigues rotation vector [rx, ry, rz] in radians (axis * angle) -- this is what cv2.solvePnP / ArUco pose estimation return directly, not Euler angles",
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Rvec",
+          "type": "array"
+        },
+        "tvec": {
+          "description": "Translation vector [tx, ty, tz] in meters",
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Tvec",
+          "type": "array"
+        }
+      },
+      "description": "Sends a 6D target pose (translation + Rodrigues rotation vector) to\n    the C++ motor-control real-time loop. Use when the user wants the robot\n    to move to, reach for, or orient itself toward a specific spatial\n    target -- not for anything about crops, weather, or farm-task logging.",
+      "name": "submit_spatial_intent"
+    },
+    {
+      "args": {},
+      "description": "Returns the robot's current physical joint angles, read from the\n    motor-control loop's live telemetry. Use when the user asks about the\n    robot's current pose, joint positions, or whether it has reached a\n    target -- not for anything about crops, weather, or farm-task logging.",
+      "name": "read_joint_states"
+    }
+  ]
+}

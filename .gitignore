@@ -9,3 +9,7 @@ langfuse-server/
 cpp/build/
 # every CMake build dir: build-rt (tools/rt_validate.sh), build-fx, build-rtsan, build-tsan (CI)
 cpp/build-*/
+
+# Real CCTV footage, annotations and recorded results: never committed (see vision/privacy.py)
+data/
+vision-results/
