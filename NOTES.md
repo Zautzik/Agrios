@@ -286,3 +286,20 @@ Re-reading the plan as a whole turned up a fifth: a staleness check comparing `P
 
 It also found that the gate could *pass by checking nothing*. A manifest with a suite but no criteria returned True, under the noise and shuffle controls as well, because `all([])` is True. That's now a failure. The controls now have to fail every suite, not just the gate overall. Tightening the validation also caught one of my own test fixtures: the cross-check's false positives all shared one id, which is the exact duplicate-id input the reviewer showed could push IDF1 to 4/3.
 
+
+---
+
+Console C1a: moving the farm logic out of the agent, without the model noticing.
+
+**Snapshot first, then move.** Before touching any code I recorded what the tools present to the model: every tool's name, description and argument schema, and its exact output for 13 calls, with the network faked and a fresh database. That baseline was committed on its own, ahead of the refactor. After the logic moved into `agrios/services/`, the snapshot matched byte for byte. Two details made that hold:
+- **Serialisation:** the wrappers keep `json.dumps(model.model_dump())` rather than Pydantic's own JSON, because the two differ in separators and in escaping non-ASCII (the en dash in "15 Nov – 15 Feb").
+- **Number types:** temperatures are typed `int | float`, so a whole number from Open-Meteo doesn't quietly become `21.0`.
+
+**A commit I had to fix.** The first C1a commit went in with four failing tests. Piping pytest into `tail` discarded its exit code, and in the full suite those tests passed only because an earlier test imported `main.py`, whose import-time `init_db()` created the tables. Run on their own, they failed. The tests now create their own schema. The lesson: check the exit code you think you're checking, and run new tests in isolation as well as in the suite.
+
+**The live eval: 32/33, and the miss isn't the refactor.** The one failure was *"When can I harvest the potatoes I'm growing?"*: the model answered without calling the calendar. The golden snapshot already shows the model sees identical tools, but the eval is about behaviour, so I ran that case 5 times on each side, alternating to cancel drift.
+- Refactored: 3/5.
+- Pre-refactor: 1/5.
+- Two-sided Fisher p ≈ 0.52: no detectable difference.
+
+The case passes about 4 times in 10 on either side. It's a real weakness of the agent (it answers harvest timing from memory when no field is named), not something the move introduced. Worth fixing on its own, with its own before/after numbers. The full run took 18.4 h instead of the usual 25–45 min because the laptop slept partway through, so its timing isn't comparable to earlier runs.
