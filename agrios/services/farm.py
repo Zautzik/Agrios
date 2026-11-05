@@ -3,8 +3,10 @@ the caller decides how a failure is shown."""
 
 from __future__ import annotations
 
+import time
+
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 from agrios.db import engine, fields_table, tasks_table
 
@@ -29,6 +31,8 @@ class Task(BaseModel):
     field_id: str
     description: str
     status: str
+    created_at: float | None = None
+    completed_at: float | None = None
 
 
 def get_field(field_id: str) -> Field | None:
@@ -41,24 +45,64 @@ def get_field(field_id: str) -> Field | None:
     return None if row is None else Field.model_validate(dict(row))
 
 
-def log_task(field_id: str, description: str) -> Task:
+def log_task(field_id: str, description: str, *, now: float | None = None) -> Task:
+    at = time.time() if now is None else now
     with engine.begin() as conn:
         result = conn.execute(
-            insert(tasks_table).values(field_id=field_id, description=description, status="pending")
+            insert(tasks_table).values(
+                field_id=field_id, description=description, status="pending", created_at=at
+            )
         )
         key = result.inserted_primary_key
     if key is None or key[0] is None:
         raise RuntimeError("the database did not return an id for the new task")
-    return Task(id=int(key[0]), field_id=field_id, description=description, status="pending")
+    return Task(id=int(key[0]), field_id=field_id, description=description, status="pending", created_at=at)
+
+
+_TASK_COLUMNS = (
+    tasks_table.c.id,
+    tasks_table.c.field_id,
+    tasks_table.c.description,
+    tasks_table.c.status,
+    tasks_table.c.created_at,
+    tasks_table.c.completed_at,
+)
 
 
 def pending_tasks() -> list[Task]:
+    # Oldest first, by id: tasks logged before created_at existed have no time.
     with engine.connect() as conn:
         rows = (
             conn.execute(
-                select(
-                    tasks_table.c.id, tasks_table.c.field_id, tasks_table.c.description, tasks_table.c.status
-                ).where(tasks_table.c.status == "pending")
+                select(*_TASK_COLUMNS).where(tasks_table.c.status == "pending").order_by(tasks_table.c.id)
+            )
+            .mappings()
+            .fetchall()
+        )
+    return [Task.model_validate(dict(r)) for r in rows]
+
+
+def complete_task(task_id: int, *, now: float | None = None) -> bool:
+    """Marks a pending task done. False if there's no pending task with that id,
+    so completing twice (a double click, two people at once) changes nothing."""
+    at = time.time() if now is None else now
+    with engine.begin() as conn:
+        result = conn.execute(
+            update(tasks_table)
+            .where(tasks_table.c.id == task_id, tasks_table.c.status == "pending")
+            .values(status="done", completed_at=at)
+        )
+    return result.rowcount == 1
+
+
+def recently_completed(limit: int = 10) -> list[Task]:
+    with engine.connect() as conn:
+        rows = (
+            conn.execute(
+                select(*_TASK_COLUMNS)
+                .where(tasks_table.c.status == "done")
+                .order_by(tasks_table.c.completed_at.desc().nulls_last(), tasks_table.c.id.desc())
+                .limit(limit)
             )
             .mappings()
             .fetchall()

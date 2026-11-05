@@ -226,6 +226,8 @@ A local web app over the same services the chat agent calls, planned in [docs/co
 - first-run owner setup;
 - sign-in with argon2id and server-side sessions;
 - a Today page;
+- an **Assistant** screen: the same agent as the CLI, with streamed replies and each tool call shown in plain words. It runs with the farm tools only: moving the robot arm from a browser waits for a confirmation step;
+- a **Farm** screen: fields, tasks (log, complete, recently done) and each field's 7-day forecast with frost and rain days marked;
 - Settings generated from typed models, with validation, defaults, reset and a change log.
 
 To see every screen without a farm, use the demo, which runs on its own database:
@@ -235,7 +237,7 @@ uv sync --extra console
 uv run python -m agrios.console --demo
 ```
 
-Then open http://localhost:8000 and sign in with the demo account shown on the page. By default it's reachable from this machine only; **Settings > Network & access** changes that. The security choices and their references are in the plan's C1b section.
+Then open http://localhost:8000 and sign in with the demo account shown on the page. The Assistant needs Ollama running with the model from Settings > Assistant; without it the screen says so and how to fix it. By default it's reachable from this machine only; **Settings > Network & access** changes that. The security choices and their references are in the plan's C1b section.
 
 ## Stack
 
@@ -243,7 +245,7 @@ Then open http://localhost:8000 and sign in with the demo account shown on the p
 - [LangChain](https://github.com/langchain-ai/langchain) + [`langchain-ollama`](https://github.com/langchain-ai/langchain) — model/tool binding
 - [Ollama](https://ollama.com/) (`qwen2.5:7b`) — local inference, no API cost or external dependency
 - [SQLAlchemy](https://www.sqlalchemy.org/) — pooled connections over SQLite (`agrios.db`) or Postgres, tested against both in CI
-- `langgraph-checkpoint-sqlite` / `langgraph-checkpoint-postgres` — conversation persistence (`checkpoints.db`, or Postgres)
+- `langgraph-checkpoint-sqlite` / `langgraph-checkpoint-postgres` — conversation persistence (`checkpoints.db`, or Postgres). With SQLite, `checkpoints.db` sits beside the database file: the default `agrios.db` keeps the history where it always was, and a `DATABASE_URL` pointing elsewhere gets its own. If you'd pointed `DATABASE_URL` at another SQLite file before, move the old `checkpoints.db` next to that file to keep your CLI threads.
 - [Langfuse](https://langfuse.com/) (self-hosted) — full tracing/observability
 - [`uv`](https://github.com/astral-sh/uv) — Python dependency management
 - C++20, CMake, POSIX shared memory, `pthread` — the real-time bridge (`cpp/`), Linux/macOS only

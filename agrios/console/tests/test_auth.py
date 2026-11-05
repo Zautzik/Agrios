@@ -2,6 +2,7 @@
 that must be refused next to the case that must work."""
 
 import hashlib
+import urllib.parse
 
 import pytest
 from fastapi import FastAPI
@@ -10,7 +11,7 @@ from httpx import Response
 from sqlalchemy import func, select
 
 from agrios.console import auth
-from agrios.console.app import SESSION_COOKIE, create_app, safe_next
+from agrios.console.app import create_app, safe_next
 from agrios.console.security import CSRF_COOKIE
 from agrios.console.tests.conftest import (
     PASSWORD,
@@ -21,6 +22,7 @@ from agrios.console.tests.conftest import (
     page_csrf,
     sign_in,
 )
+from agrios.console.web import SESSION_COOKIE
 from agrios.db import engine, sessions_table, users_table
 from agrios.services import settings
 
@@ -324,3 +326,32 @@ def test_unknown_user_takes_as_long_as_a_wrong_password(owner, clock):
 
 def test_a_very_long_lockout_does_not_overflow():
     assert auth.lock_remaining(5000, 0.0, 0.0) == auth.MAX_LOCK_S
+
+
+@pytest.mark.parametrize(
+    ("referer", "comes_back_to"),
+    [
+        ("http://localhost/farm", "/farm"),  # the page the form was on
+        ("http://localhost/assistant/console-abc?x=1", "/assistant/console-abc?x=1"),
+        ("https://evil.example/farm", "/"),  # another site's page is never a target
+        (None, "/"),
+    ],
+)
+def test_a_form_posted_after_the_session_expired_comes_back_to_its_page(
+    client, owner, clock, referer, comes_back_to
+):
+    # The form's own address (/farm/tasks) has no page: coming back to it after
+    # signing in would be a 405.
+    sign_in(client)
+    csrf = page_csrf(client, "/farm")
+    clock.advance(31 * 60)  # past the idle timeout
+    headers = {"referer": referer} if referer else {}
+    response = client.post("/farm/tasks", data={"csrf_token": csrf, "description": "x"}, headers=headers)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login?next=" + urllib.parse.quote(comes_back_to)
+
+
+def test_a_page_request_after_the_session_expired_still_comes_back_to_itself(client, owner, clock):
+    sign_in(client)
+    clock.advance(31 * 60)
+    assert client.get("/farm").headers["location"] == "/login?next=/farm"

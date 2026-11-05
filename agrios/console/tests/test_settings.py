@@ -80,7 +80,7 @@ def test_allowed_networks_are_validated(networks, ok):
 
 
 def test_the_assistant_reads_the_farm_thresholds(monkeypatch):
-    import main  # imported here: heavy, and only this test needs the agent module
+    from agrios import agent  # imported here: heavy, and only this test needs it
 
     seen: dict[str, Any] = {}
 
@@ -88,10 +88,10 @@ def test_the_assistant_reads_the_farm_thresholds(monkeypatch):
         seen.update(thresholds)
         raise weather.LocationNotFoundError(location)
 
-    # main calls weather.forecast through the module, so patching the module reaches it.
+    # The agent calls weather.forecast through the module, so patching the module reaches it.
     monkeypatch.setattr(weather, "forecast", fake_forecast)
     settings.update("farm", {"frost_risk_c": "4.5", "rain_day_mm": "2"}, username="owner")
-    main.get_weather_forecast.invoke({"location": "field-1"})
+    agent.get_weather_forecast.invoke({"location": "field-1"})
     assert seen == {"frost_risk_c": 4.5, "rain_day_mm": 2.0}
 
 

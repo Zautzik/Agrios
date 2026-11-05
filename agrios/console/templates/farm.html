@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}{{ _("Farm") }}{% endblock %}
+{% block content %}
+<h1>{{ _("Farm") }}</h1>
+{% set can_edit = session.user.role in ("owner", "operator") %}
+<div class="grid">
+  <section class="card" aria-labelledby="pending-heading">
+    <h2 id="pending-heading">{{ _("Pending tasks") }}</h2>
+    {% if tasks %}
+    <ul class="list">
+      {% for task in tasks %}
+      <li class="task">
+        <span><span class="tag">{{ task.field_id }}</span> {{ task.description }}
+          {% if task.created_at %}<span class="when">{{ _("logged %(at)s", at=task.created_at | when) }}</span>{% endif %}</span>
+        {% if can_edit %}
+        <form method="post" action="/farm/tasks/{{ task.id }}/done">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="small" aria-label="{{ _('Mark done: %(task)s', task=task.description) }}"><span aria-hidden="true">✔</span> {{ _("Done") }}</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="empty"><span aria-hidden="true">✔</span> {{ _("Nothing pending.") }}</p>
+    {% endif %}
+    {% if can_edit %}
+    <h3 id="log-heading">{{ _("Log a task") }}</h3>
+    {% if error %}<div class="message error" role="alert"><span aria-hidden="true">✖</span> {{ error }}</div>{% endif %}
+    <form method="post" action="/farm/tasks" aria-labelledby="log-heading">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="task-field">{{ _("Field") }}</label>
+      <select id="task-field" name="field_id">
+        {% for field in fields %}
+        <option value="{{ field.field_id }}" {% if typed.field_id == field.field_id %}selected{% endif %}>{{ field.field_id }}{% if field.crop %} · {{ field.crop }}{% endif %}</option>
+        {% endfor %}
+      </select>
+      <label for="task-description">{{ _("What needs doing") }}</label>
+      <input id="task-description" name="description" value="{{ typed.description }}" maxlength="{{ max_task_length }}" placeholder="{{ _('Irrigate the north rows') }}" {% if error %}aria-invalid="true"{% endif %}>
+      <button type="submit" class="primary">{{ _("Log task") }}</button>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="card" aria-labelledby="fields-heading">
+    <h2 id="fields-heading">{{ _("Fields") }}</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">{{ _("Field") }}</th><th scope="col">{{ _("Crop") }}</th><th scope="col">{{ _("Status") }}</th><th scope="col">{{ _("Region") }}</th></tr></thead>
+        <tbody>
+          {% for field in fields %}
+          <tr><td>{{ field.field_id }}</td><td>{{ field.crop or "—" }}</td><td>{{ field.status or "—" }}</td><td>{{ field.region or "—" }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<h2 class="section-heading">{{ _("Weather, next 7 days") }}</h2>
+<div class="grid">
+  {% for field in fields %}
+  {# Each forecast loads after the page, so a slow weather service never holds up the tasks. #}
+  <section class="card" aria-labelledby="weather-{{ field.field_id }}" hx-get="/farm/weather/{{ field.field_id }}" hx-trigger="load" hx-swap="innerHTML">
+    <h3 id="weather-{{ field.field_id }}">{{ field.field_id }}</h3>
+    <p class="empty"><a href="/farm/weather/{{ field.field_id }}" hx-boost="false">{{ _("Show the forecast") }}</a></p>
+  </section>
+  {% endfor %}
+</div>
+
+{% if done %}
+<section class="card" aria-labelledby="done-heading">
+  <h2 id="done-heading">{{ _("Recently done") }}</h2>
+  <ul class="list">
+    {% for task in done %}
+    <li><span class="tag">{{ task.field_id }}</span> {{ task.description }}
+      {% if task.completed_at %}<span class="when">{{ _("done %(at)s", at=task.completed_at | when) }}</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

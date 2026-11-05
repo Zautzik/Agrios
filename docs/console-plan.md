@@ -7,7 +7,7 @@ One local web app for everything Agrios does:
 
 It runs on your own network, costs $0, and nothing leaves the site. It works in a desktop browser and on a phone in the field.
 
-**Status: C1 in progress.** Built so far: the shared service layer (C1a) and the console shell with sign-in and settings (C1b, decisions below). Everything else here is planned. Licences below were checked against upstream on 2026-11-03.
+**Status: C1 in progress.** Built so far: the shared service layer (C1a), the console shell with sign-in and settings (C1b), and the Assistant and Farm screens (C1c), with decisions below. Everything else here is planned. Licences below were checked against upstream on 2026-11-03.
 
 ## Principles
 
@@ -50,7 +50,7 @@ It runs on your own network, costs $0, and nothing leaves the site. It works in 
 | **Farm** | The current Agrios features | Fields (crop, region, status, crop-calendar windows); tasks (log, complete, see pending); a 7-day weather view with frost and rain days marked |
 | **Incidents** | Reviewing what perception flagged | A queue of cards, each with a keyframe strip, the vision model's summary, type, camera, time and the track involved. Buttons **Confirm / Reject / Not sure**, with keyboard shortcuts for fast triage. Filters and export. **Your verdicts become the calibration data** that bounds false alarms. |
 | **Cameras** | Camera health and live view | A snapshot grid, with live video on demand. Per-camera frame rate, dropped frames, tamper and quality flags (blur, glare, covered lens, IR switch), and mode (shadow or armed). |
-| **Analytics** | Trends over time | **Gait:** each animal's asymmetry trend, with "flagged since". **Aggression:** time-of-day heat strip and pair counts. **Security:** geofence entries and dwell times. **Workshop:** station occupancy and cycle time vs takt, anonymous by default. **Reliability:** false alarms per camera-day with the 95% bound, per camera and per analytic. |
+| **Analytics** | Trends over time | **Gait:** each animal's asymmetry trend, with "flagged since". **Aggression:** time-of-day heat strip and pair counts. **Security:** geofence entries and dwell times. **Press:** each press's running and idle time and output, measured on the machine, never per person (see the vision README's Deployment scope). **Reliability:** false alarms per camera-day with the 95% bound, per camera and per analytic. |
 | **Setup** (⚙) | One-time configuration | The camera wizard (below), users and roles, footage retention, privacy mode, notifications, language |
 | **Hardware** (⚙) | The robot bridge and safety chain | Pi and Mega status, heartbeat age, the last real-time latency report, joint telemetry (today's `read_joint_states`), and a relay test that needs a confirmation step and is logged |
 
@@ -190,5 +190,22 @@ Run it with `uv run python -m agrios.console` (or `--demo`). The address and por
 | Settings | One Pydantic model per group. Forms are generated from the model, every change is logged (who, when, old, new), each field shows its default and a reset, and restart-only fields say so | The UI can't drift from what the service validates. An invalid save changes nothing. A stored value that stops validating after an upgrade falls back to its default alone, and an unreadable group falls back to all defaults, so the UI always loads to fix it. Setting text is printed escaped, never through gettext, which marks its argument as safe HTML. |
 | Front end | Server-rendered Jinja with htmx (`hx-boost`), vendored with hash-checked files | Works without JavaScript and needs no CDN or internet |
 | i18n | Templates call gettext from day one (`jinja2.ext.i18n`); extracting a Spanish catalogue with Babel comes with the translation | Setting titles live in Python and will need extraction markers then |
-| Not yet | keyring (no secrets are stored until cameras, C2); sse-starlette (Assistant streaming, C1c); Alpine.js (calibration canvas, C2) | Each arrives with the first feature that needs it |
+| Not yet | keyring (no secrets are stored until cameras, C2); Alpine.js (calibration canvas, C2) | Each arrives with the first feature that needs it |
+
+## C1c: what was built and why (2026-11-05)
+
+| Decision | Chosen | Why |
+|---|---|---|
+| Where the agent lives | `agrios/agent.py`, imported by the CLI (`main.py`) and the console | One graph, two front ends. Moving it put it under ruff and mypy --strict for the first time. The golden snapshot caught the formatter re-indenting two tool docstrings, which would have changed the text the model reads; those two are fenced off from formatting. |
+| Robot tools in the browser | The console runs the agent with the farm tools only. They're bound to the model and checked again before a call runs. | A chat message in a browser mustn't be able to move hardware. That waits for the Hardware screen's confirmation step (C3). The CLI keeps every tool, and a test shows the same guard lets a robot call through there. |
+| Streaming | Server-Sent Events over the POST that sends the message, using FastAPI's built-in `EventSourceResponse`, read with `fetch()` | No sse-starlette dependency, which the plan had expected. EventSource can only GET, and the message and CSRF token belong in a body and a header, not a URL. |
+| Without JavaScript | The same form posts to `/assistant/send`, waits for the whole reply, and redirects back | Works everywhere. Errors travel as a kind (`?error=model`), so no text from a URL is ever shown. |
+| Tool calls on screen | Each call is shown in plain words with its arguments ("Checked the forecast for field-1") and whether it worked | An answer can be traced to what it was based on, including a wrong argument |
+| Model output | Inserted as text (`textContent`, Jinja escaping), with line breaks kept | Nothing the model writes can become markup. Rendering Markdown would need a sanitiser, and isn't worth one yet. |
+| Conversations | Owned per account, in `assistant_threads`. Someone else's and a missing one both answer 404. Deleting removes the checkpoint too. One reply at a time per conversation. | Thread ids can't be probed, and a deleted conversation leaves nothing behind |
+| Conversation storage | `checkpoints.db` beside whichever SQLite database is in use | Before, it was always the repo's `checkpoints.db`, so the demo and the tests would have written into the real history |
+| Farm tasks | Logged, completed and listed through the same service functions the agent's tools call, with `created_at` and `completed_at` (older tasks keep NULL rather than an invented time). Completing twice changes nothing. | A task from the page and one from chat are the same record |
+| Roles | Viewers see Farm read-only and have no Assistant (it can log tasks); operators and owners can do both | Forms a role can't use aren't shown, and the server refuses them anyway |
+| Weather | Each field's forecast loads after the page (`hx-trigger="load"`); a field without coordinates never reaches the weather service | A slow service never holds up the tasks. Without coordinates, the service would look the field id up as a place name. |
+| Today | An "Ask Agrios" box that opens the Assistant with the question filled in | It only fills the box: a link someone sends you can't make the assistant act |
 

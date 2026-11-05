@@ -1,0 +1,30 @@
+{# One field's forecast. Frost and rain are marked with a symbol and a word, never colour alone. #}
+<h3 id="weather-{{ field.field_id }}">{{ field.field_id }}{% if forecast and forecast.resolved_to != field.field_id %} <span class="when">{{ forecast.resolved_to }}</span>{% endif %}</h3>
+{% if error %}
+<p class="message error" role="status"><span aria-hidden="true">✖</span> {{ error }}</p>
+{% else %}
+<p class="summary">
+  {% if forecast.frost_risk_days %}<span class="flag frost"><span aria-hidden="true">❄</span> {{ _("Days with frost risk: %(n)s", n=forecast.frost_risk_days | length) }}</span>{% else %}<span class="flag">{{ _("No frost risk") }}</span>{% endif %}
+  {% if forecast.rain_days %}<span class="flag rain"><span aria-hidden="true">☂</span> {{ _("Rain days: %(n)s, %(mm)s mm in total", n=forecast.rain_days | length, mm=forecast.total_rain_mm) }}</span>{% else %}<span class="flag">{{ _("Dry") }}</span>{% endif %}
+</p>
+<div class="table-wrap">
+  <table class="forecast">
+    <thead><tr><th scope="col">{{ _("Day") }}</th><th scope="col">{{ _("Low") }}</th><th scope="col">{{ _("High") }}</th><th scope="col">{{ _("Rain") }}</th></tr></thead>
+    <tbody>
+      {% for day in forecast.forecast %}
+      {# The flags sit under the date rather than in a column of their own, so a phone shows them without scrolling. #}
+      <tr>
+        <td><time datetime="{{ day.date }}">{{ day.date | day }}</time>
+          {% if day.frost_risk %}<span class="flag frost"><span aria-hidden="true">❄</span> {{ _("frost risk") }}</span>{% endif %}
+          {% if day.date in forecast.rain_days %}<span class="flag rain"><span aria-hidden="true">☂</span> {{ _("rain day") }}</span>{% endif %}
+        </td>
+        <td>{{ "—" if day.temp_min_c is none else "%s °C" | format(day.temp_min_c) }}</td>
+        <td>{{ "—" if day.temp_max_c is none else "%s °C" | format(day.temp_max_c) }}</td>
+        <td>{{ "—" if day.rain_mm is none else "%s mm" | format(day.rain_mm) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="help">{{ _("Frost risk: a low at or below %(frost)s °C. Rain day: %(rain)s mm or more. Both are in Settings > Farm. Source: open-meteo.com.", frost=thresholds.frost_risk_c, rain=thresholds.rain_day_mm) }}</p>
+{% endif %}

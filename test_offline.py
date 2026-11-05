@@ -12,6 +12,7 @@ from sqlalchemy.schema import CreateTable
 import httpx
 
 import main
+from agrios import agent  # the module whose globals the agent reads; patch it, not main
 import migrate_checkpoints
 
 
@@ -222,7 +223,7 @@ def test_long_thread_routes_to_summarize_and_short_one_ends():
 
 def test_summarize_folds_old_turns_and_removes_them(monkeypatch):
     fake = FakeModel("- field-2 discussed; q3 unanswered")
-    monkeypatch.setattr(main, "summarizer_model", fake)
+    monkeypatch.setattr(agent, "summarizer_model", fake)
     messages = _long_thread(6)
     # Turns 1 and 2 logged tasks (current JSON reply, and the older text reply):
     # both must reach the summary from the tool results, not from the model.
@@ -246,7 +247,7 @@ def test_summarize_folds_old_turns_and_removes_them(monkeypatch):
 
 def test_agent_sees_the_summary(monkeypatch):
     fake = FakeModel("ok")
-    monkeypatch.setattr(main, "model_with_tools", fake)
+    monkeypatch.setattr(agent, "model_with_tools", fake)
     main.agent_node({"messages": [HumanMessage("what did we do?")], "summary": "Logged irrigation for field-2."})
     first = fake.seen[0][0]
     assert first.type == "system" and "Logged irrigation for field-2." in first.content

@@ -2,6 +2,15 @@
 {% block title %}{{ _("Today") }}{% endblock %}
 {% block content %}
 <h1>{{ _("Today") }}</h1>
+{% if session.user.role in ("owner", "operator") %}
+{# A GET to the Assistant with the question filled in: reviewing it before
+   sending costs one click, and nothing runs from a link someone else made. #}
+<form method="get" action="/assistant" class="card ask-today">
+  <label for="ask">{{ _("Ask Agrios") }}</label>
+  <input id="ask" name="q" maxlength="4000" placeholder="{{ _('Will there be frost on field-1 this week?') }}">
+  <button type="submit" class="primary">{{ _("Ask") }}</button>
+</form>
+{% endif %}
 <div class="grid">
   <section class="card" aria-labelledby="tasks-heading">
     <h2 id="tasks-heading">{{ _("Pending tasks") }}</h2>
@@ -14,6 +23,7 @@
     {% else %}
     <p class="empty"><span aria-hidden="true">✔</span> {{ _("Nothing pending.") }}</p>
     {% endif %}
+    <p><a href="/farm">{{ _("Log or complete tasks on the Farm page") }}</a></p>
   </section>
   <section class="card" aria-labelledby="fields-heading">
     <h2 id="fields-heading">{{ _("Fields") }}</h2>

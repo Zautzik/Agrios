@@ -329,3 +329,51 @@ It also found:
 All fixed, each with a test. One claim it raised was wrong: settings left behind by other tests can't reach the golden snapshot, because that runs in a subprocess on its own database. The console tests now clean up after themselves anyway.
 
 **Numbers.** 174 passed, 2 skipped (83 console tests); ruff and mypy --strict clean. Not yet run: the console tests on Postgres (the CI job will be the first), and a browser test in CI (C1d).
+
+
+---
+
+Console C1c: the Assistant and Farm screens, and a review that found what a disconnect does.
+
+**What's there.**
+- **The agent moved** from `main.py` into `agrios/agent.py`. The CLI and the console now run the same graph. The move put the agent under ruff and mypy --strict for the first time.
+- **The golden snapshot earned its keep.** The formatter had re-indented two tool docstrings, which would have changed the descriptions the model reads. The snapshot failed on it; those two functions are now fenced off from formatting.
+- **The Assistant** streams replies as Server-Sent Events over the POST that sends the message, using FastAPI's built-in support, so sse-starlette isn't needed. Each tool call is shown in plain words with whether it worked. The same form works without JavaScript.
+- **The farm tools only.** The console runs the agent with the farm tools: they're bound to the model and checked again before a call runs. A chat message in a browser can't move the robot arm.
+- **The Farm screen** logs and completes tasks through the same service functions the agent's tools call, and loads each field's forecast after the page.
+
+**A bug found before any test.** `open_checkpointer` always used the repo's `checkpoints.db`, whatever database was in use. So the demo, and the console tests, would have written their conversations into the real history. It now sits beside the SQLite database in use.
+
+**Measured against the real model.** In Edge, with `qwen2.5:7b` on this laptop's CPU (Ollama reports nothing on the GPU), for "What tasks are pending, and will there be frost on field-1 this week?":
+- the first tool step showed after 36 s;
+- the first answer text after 81 s;
+- the full answer after 122 s.
+
+Both tool calls showed as succeeded, the answer matched the forecast data, and it all survived a reload. There were no Content-Security-Policy violations or console errors, and no horizontal scroll at 1280 or 390 px. The page's strict CSP even refused the test driver's own `wait_for_function`, because it evaluates a string. The phone screenshot caught a forecast column cut off; the flags now sit under the date.
+
+**The review found what a disconnect does.** A fresh-context reviewer confirmed six of seven findings by experiment:
+- **A reload mid-reply abandoned the turn.** FastAPI closes a streaming response's generator when the client leaves, which stopped the agent between a tool call and its result. The saved history was `[human, ai '']`. The turn now runs on its own thread, and the response only passes its events on.
+  - Test: close the stream after its first event, and the full turn `[human, ai, tool, ai]` is still saved.
+  - Control: a generator consumed inline stops where it's closed; through `in_background` it runs to the end.
+  - My first control abandoned a real turn inline. In about one full-suite run in three, it made Windows report an access violation, though pytest still passed. Abandoning LangGraph mid-run leaves its background checkpoint write racing the checkpointer's close. That's the same hazard the fix removes from the app, so the control now shows the mechanism on a plain generator instead. Since then, 0 reports in 5 full runs.
+- **Deleting a conversation while it was answering didn't delete it.** The running turn's next checkpoint, which holds the whole state, brought the history back with no owner. Delete now waits for the turn, and a turn whose conversation has gone deletes its checkpoint when it ends.
+- **Forms posted after the session expired came back to a 404 or 405 after sign-in** (/assistant/send, /farm/tasks), and the typed message was lost. A post now comes back to the page it was on. The script keeps an unsent message for that tab, and Edge showed it back in the box after signing in.
+- **Enter could send a second message while one was streaming**, because `requestSubmit()` ignores a disabled button. Edge confirmed one request for two presses after the fix.
+- **Text the model wrote before a tool call** showed while streaming but vanished on reload. It's kept now, joined the same way in both.
+- **A boosted click on the forecast's fallback link** loaded a bare fragment as the whole page.
+- **The new checkpoint location** moves history for anyone who had pointed DATABASE_URL at another SQLite file. Documented in the README, with how to keep old threads.
+
+**Do the tests test anything?** I broke 17 protections one at a time:
+- the robot-tool block, binding and checking;
+- account isolation;
+- delete, and delete during a turn;
+- the busy guard;
+- roles;
+- streaming;
+- the disconnect fix;
+- answer joining;
+- the sign-in return path;
+- the Enter guard;
+- and five others.
+
+The tests caught all 17.

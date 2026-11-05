@@ -11,6 +11,9 @@
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/vendor/htmx-2.0.11.min.js" defer></script>
+  {# Loaded on every page, not just the Assistant: htmx doesn't run scripts in
+     the pages it swaps in (allowScriptTags is off), so it must already be here. #}
+  <script src="/static/assistant.js" defer></script>
 </head>
 <body hx-boost="true">
   <a class="skip-link" href="#main">{{ _("Skip to content") }}</a>
@@ -24,6 +27,10 @@
     {% if session %}
     <nav aria-label="{{ _('Main') }}">
       <a href="/" {% if path == "/" %}aria-current="page"{% endif %}>{{ _("Today") }}</a>
+      {% if session.user.role in ("owner", "operator") %}
+      <a href="/assistant" {% if path.startswith("/assistant") %}aria-current="page"{% endif %}>{{ _("Assistant") }}</a>
+      {% endif %}
+      <a href="/farm" {% if path.startswith("/farm") %}aria-current="page"{% endif %}>{{ _("Farm") }}</a>
       {% if session.user.role == "owner" %}
       <a href="/settings" {% if path.startswith("/settings") %}aria-current="page"{% endif %}>{{ _("Settings") }}</a>
       {% endif %}

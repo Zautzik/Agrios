@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}{{ conversation.title if conversation else _("Assistant") }}{% endblock %}
+{% macro step_item(step) %}
+<li class="step {{ 'failed' if step.error else 'ok' if step.finished else 'running' }}">
+  {% if step.error %}<span aria-hidden="true">✖</span>{% elif step.finished %}<span aria-hidden="true">✔</span>{% else %}<span aria-hidden="true">…</span>{% endif %}
+  {{ step.label }}
+  {% if step.error %}<span class="step-detail">{{ _("failed:") }} {{ step.error }}</span>{% elif not step.finished %}<span class="visually-hidden">{{ _("(didn't finish)") }}</span>{% endif %}
+</li>
+{% endmacro %}
+{% block content %}
+<div class="assistant">
+  <nav class="threads" aria-labelledby="threads-heading">
+    <h2 id="threads-heading">{{ _("Conversations") }}</h2>
+    <p><a href="/assistant" class="new-thread" {% if not conversation %}aria-current="page"{% endif %}><span aria-hidden="true">＋</span> {{ _("New conversation") }}</a></p>
+    {% if conversations %}
+    <ul class="list">
+      {% for c in conversations %}
+      <li><a href="/assistant/{{ c.thread_id }}" {% if conversation and c.thread_id == conversation.thread_id %}aria-current="page"{% endif %}>{{ c.title }}</a>
+        <span class="when">{{ c.updated_at | when }}</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </nav>
+
+  <section class="card chat" aria-labelledby="chat-heading">
+    <div class="chat-head">
+      <h1 id="chat-heading">{{ conversation.title if conversation else _("Ask Agrios") }}</h1>
+      {% if conversation %}
+      <form method="post" action="/assistant/{{ conversation.thread_id }}/delete" hx-confirm="{{ _('Delete this conversation? Its messages are removed too.') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" class="link">{{ _("Delete") }}</button>
+      </form>
+      {% endif %}
+    </div>
+
+    {% if not conversation %}
+    <p class="help">{{ _("Ask about your fields, tasks, the weather or the crop calendar. The assistant runs on this machine (model: %(model)s); each thing it checks is listed under your question, so you can see what an answer is based on.", model=model_name) }}</p>
+    {% endif %}
+    {% if summarised %}
+    <p class="hint">{{ _("Earlier messages in this conversation were condensed into a summary the assistant still uses.") }}</p>
+    {% endif %}
+
+    {# aria-busy while a reply streams in, so screen readers announce it once it's complete, not word by word. #}
+    <div id="conversation" class="conversation" role="log" aria-live="polite" aria-busy="false">
+      {% for turn in turns %}
+      <div class="turn">
+        <p class="you"><span class="visually-hidden">{{ _("You:") }}</span>{{ turn.question }}</p>
+        {% if turn.steps %}<ul class="steps" aria-label="{{ _('What the assistant checked') }}">{% for step in turn.steps %}{{ step_item(step) }}{% endfor %}</ul>{% endif %}
+        {% if turn.answer %}<div class="answer"><span class="visually-hidden">{{ _("Agrios:") }}</span>{{ turn.answer }}</div>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <div id="chat-error" class="message error" role="alert" {% if not error %}hidden{% endif %}><span aria-hidden="true">✖</span> <span class="text">{{ error or "" }}</span></div>
+
+    {# Without JavaScript this posts to /assistant/send and waits for the whole reply;
+       assistant.js streams it from /assistant/stream instead. Not boosted: the script owns submission. #}
+    <form method="post" action="/assistant/send" class="ask" data-assistant-form data-stream="/assistant/stream" hx-boost="false">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="thread_id" value="{{ conversation.thread_id if conversation else '' }}">
+      <label for="message">{{ _("Message") }}</label>
+      <textarea id="message" name="message" rows="3" maxlength="{{ max_message_length }}" required placeholder="{{ _('Will there be frost on field-1 this week?') }}">{{ typed }}</textarea>
+      <button type="submit" class="primary">{{ _("Send") }}</button>
+      <span class="status" role="status" aria-live="polite"></span>
+    </form>
+  </section>
+</div>
+<template id="step-template"><li class="step running"><span aria-hidden="true" class="icon">…</span> <span class="label"></span> <span class="step-detail"></span></li></template>
+{% endblock %}

@@ -44,12 +44,25 @@ DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{BASE_DIR}/agrios.db")
 engine = create_engine(DATABASE_URL, poolclass=QueuePool, pool_size=5, max_overflow=10)
 
 
+def default_checkpoint_path(database_url: str = DATABASE_URL) -> Path:
+    """checkpoints.db beside the SQLite farm database: the default install
+    keeps its BASE_DIR/checkpoints.db, and a database elsewhere (the console
+    demo's, a test run's) gets its own conversation history instead of
+    writing into the real one."""
+    url = make_url(database_url)
+    if url.get_backend_name() == "sqlite" and url.database and url.database != ":memory:":
+        return Path(url.database).with_name("checkpoints.db")
+    return BASE_DIR / "checkpoints.db"
+
+
 @contextmanager
 def open_checkpointer(
-    database_url: str = DATABASE_URL, sqlite_path: Path = BASE_DIR / "checkpoints.db"
+    database_url: str = DATABASE_URL, sqlite_path: Path | None = None
 ) -> Iterator[BaseCheckpointSaver[str]]:
     """Conversation history follows DATABASE_URL: on Postgres it lives in the
     same database as the farm data; otherwise in its own SQLite file."""
+    if sqlite_path is None:
+        sqlite_path = default_checkpoint_path(database_url)
     url = make_url(database_url)
     if url.get_backend_name() == "postgresql":
         from langgraph.checkpoint.postgres import PostgresSaver
@@ -83,7 +96,10 @@ tasks_table = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("field_id", Text),
     Column("description", Text),
-    Column("status", Text, server_default="pending"),
+    Column("status", Text, server_default="pending"),  # "pending" or "done"
+    # Unix seconds. Tasks from before these columns existed have neither.
+    Column("created_at", Float),
+    Column("completed_at", Float),
 )
 
 # Console tables. Timestamps are Unix seconds as floats: dialect-neutral, and the
@@ -136,6 +152,19 @@ settings_changes_table = Table(
     Column("new_value", Text, nullable=False),
 )
 
+# The console's conversations: the messages themselves are in the agent's
+# checkpointer, under thread_id; this table records whose they are, so one
+# account can't open another's, and gives each a title for the list.
+assistant_threads_table = Table(
+    "assistant_threads",
+    metadata,
+    Column("thread_id", Text, primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("title", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
 SEED_FIELDS = [
     {"field_id": "field-1", "crop": "potato", "status": "growing", "region": "central Chile",
      "latitude": -34.17, "longitude": -70.74},
@@ -144,6 +173,9 @@ SEED_FIELDS = [
 ]  # fmt: skip
 # Columns added after the first release, with the SQL type to add them as.
 ADDED_COLUMNS = {"region": "TEXT", "latitude": "FLOAT", "longitude": "FLOAT"}
+# Added to tasks for the console (C1c). Existing tasks keep NULL: when they were
+# created isn't known, and inventing a time would be worse than showing none.
+ADDED_TASK_COLUMNS = {"created_at": "FLOAT", "completed_at": "FLOAT"}
 
 
 def init_db(db_engine: Engine = engine) -> None:
@@ -163,6 +195,10 @@ def init_db(db_engine: Engine = engine) -> None:
                     .where(fields_table.c.field_id == row["field_id"], column.is_(None))
                     .values({name: row[name]})
                 )
+        task_columns = {c["name"] for c in inspect(conn).get_columns("tasks")}
+        for name, sql_type in ADDED_TASK_COLUMNS.items():
+            if name not in task_columns:
+                conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {name} {sql_type}"))
         count = conn.execute(select(func.count()).select_from(fields_table)).scalar()
         if count == 0:
             conn.execute(insert(fields_table), SEED_FIELDS)
