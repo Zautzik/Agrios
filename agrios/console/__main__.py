@@ -26,8 +26,11 @@ DEMO_TASKS = (
 
 def _use_demo_database() -> None:
     DEMO_DB.parent.mkdir(parents=True, exist_ok=True)
-    for suffix in ("", "-wal", "-shm"):
-        DEMO_DB.with_name(DEMO_DB.name + suffix).unlink(missing_ok=True)
+    # The demo's conversations are in checkpoints.db beside it
+    # (db.default_checkpoint_path), so they reset with it.
+    for name in (DEMO_DB.name, "checkpoints.db"):
+        for suffix in ("", "-wal", "-shm"):
+            DEMO_DB.with_name(name + suffix).unlink(missing_ok=True)
     # Must happen before agrios.db is imported: it builds its engine from
     # DATABASE_URL at import, the same way the CLI and the tests configure it.
     os.environ["DATABASE_URL"] = f"sqlite:///{DEMO_DB}"

@@ -1,9 +1,10 @@
 """The console web app. create_app builds it; python -m agrios.console runs it.
 
-Every route is in one of two routers: `public` (sign-in, first-run setup,
-health check) or `protected`, which requires a signed-in session and checks
-CSRF on every state-changing request. A route can't be added without picking
-one, and a test asserts the public set is exactly what's listed here.
+Every route is in a router: `public` (sign-in, first-run setup, health
+check), or one behind the sign-in guard (web.signed_in), which also checks
+CSRF on every state-changing request: `protected` here, and one per screen in
+pages/. A test requests every route signed out and asserts that only the
+public set answers.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import secrets
 import time
 import urllib.parse
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -26,24 +27,30 @@ from pydantic import ValidationError
 from sqlalchemy import make_url
 
 from agrios.console import auth, forms
-from agrios.console.security import (
-    CSRF_COOKIE,
-    CSRF_FIELD,
-    CSRF_HEADER,
-    client_allowed,
-    cross_site,
-    csrf_valid,
-    host_allowed,
-    new_csrf_token,
-    parse_client,
+from agrios.console.pages import assistant as assistant_pages
+from agrios.console.pages import farm as farm_pages
+from agrios.console.security import CSRF_COOKIE, client_allowed, host_allowed, parse_client
+from agrios.console.web import (
+    SAFE_METHODS,
+    SESSION_COOKIE,
+    CsrfError,
+    ForbiddenError,
+    NotSignedInError,
+    Owner,
+    SetupRequiredError,
+    SignedIn,
+    anonymous_csrf,
+    current_settings,
+    now,
+    redirect,
+    render,
+    signed_in,
 )
 from agrios.db import BASE_DIR, DATABASE_URL
 from agrios.services import farm
 from agrios.services import settings as settings_service
 
 HERE = Path(__file__).resolve().parent
-SESSION_COOKIE = "agrios_session"
-SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 PUBLIC_PATHS = frozenset({"/login", "/setup", "/healthz"})  # plus /static, mounted separately
 
 GROUP_LABELS = {
@@ -71,22 +78,6 @@ SECURITY_HEADERS = {
 }
 
 
-class NotSignedInError(Exception):
-    pass
-
-
-class SetupRequiredError(Exception):
-    pass
-
-
-class ForbiddenError(Exception):
-    pass
-
-
-class CsrfError(Exception):
-    pass
-
-
 def _jinja_env() -> Environment:
     env = Environment(
         loader=FileSystemLoader(HERE / "templates"),
@@ -99,6 +90,8 @@ def _jinja_env() -> Environment:
     # translation catalogue later rather than a rewrite of the templates.
     env.install_gettext_translations(gettext.NullTranslations(), newstyle=True)  # type: ignore[attr-defined]
     env.filters["when"] = lambda at: datetime.fromtimestamp(at).strftime("%Y-%m-%d %H:%M")
+    # "Thu 05 Nov" from "2026-11-05": short enough for a phone-width forecast table.
+    env.filters["day"] = lambda iso: date.fromisoformat(iso).strftime("%a %d %b")
     return env
 
 
@@ -110,83 +103,17 @@ def safe_next(target: str | None) -> str:
     return "/"
 
 
-def _now(request: Request) -> float:
-    clock: Callable[[], float] = request.app.state.clock
-    return clock()
-
-
-def _settings(request: Request) -> settings_service.Settings:
-    cached = getattr(request.state, "settings", None)
-    if cached is None:
-        cached = settings_service.load()
-        request.state.settings = cached
-    return cached
-
-
-def current_session(request: Request) -> auth.Session:
-    if not auth.has_users():
-        raise SetupRequiredError
-    token = request.cookies.get(SESSION_COOKIE)
-    access = _settings(request).access
-    session = (
-        auth.resolve_session(
-            token,
-            now=_now(request),
-            idle_s=access.session_idle_minutes * 60.0,
-            max_s=access.session_max_hours * 3600.0,
-        )
-        if token
-        else None
-    )
-    if session is None:
-        raise NotSignedInError
-    request.state.session = session
-    return session
-
-
-async def _check_csrf(request: Request, expected: str | None) -> None:
-    if cross_site(request):
-        raise CsrfError
-    submitted = request.headers.get(CSRF_HEADER)
-    if submitted is None:
-        value = (await request.form()).get(CSRF_FIELD)
-        submitted = value if isinstance(value, str) else None
-    if not csrf_valid(submitted, expected):
-        raise CsrfError
-
-
-async def signed_in(
-    request: Request, session: Annotated[auth.Session, Depends(current_session)]
-) -> auth.Session:
-    """The protected router's guard: a live session, and for anything that
-    changes state, that session's CSRF token."""
-    if request.method not in SAFE_METHODS:
-        await _check_csrf(request, session.csrf_token)
-    return session
-
-
-async def anonymous_csrf(request: Request) -> None:
-    """CSRF for the forms used before signing in (double-submit cookie)."""
-    if request.method not in SAFE_METHODS:
-        await _check_csrf(request, request.cookies.get(CSRF_COOKIE))
-
-
-def require_owner(session: Annotated[auth.Session, Depends(signed_in)]) -> auth.Session:
-    if session.user.role != "owner":
-        raise ForbiddenError
-    return session
-
-
-SignedIn = Annotated[auth.Session, Depends(signed_in)]
-Owner = Annotated[auth.Session, Depends(require_owner)]
-
-
-def _redirect(request: Request, url: str) -> Response:
-    # htmx follows HX-Redirect with a full page load, which a plain 303 inside
-    # an htmx request wouldn't do for a sign-in page.
-    if request.headers.get("hx-request") == "true":
-        return Response(status_code=200, headers={"HX-Redirect": url})
-    return RedirectResponse(url, status_code=303)
+def _return_path(request: Request) -> str:
+    """Where to come back to after signing in. A GET comes back to itself. A
+    form post can't (most have no page at their address: /farm/tasks would be
+    a 405), so it comes back to the page the form was on, from Referer when
+    that's this site, else the home page."""
+    if request.method in SAFE_METHODS:
+        return request.url.path
+    referer = urllib.parse.urlsplit(request.headers.get("referer", ""))
+    if referer.netloc == request.url.netloc:
+        return safe_next(referer.path + (f"?{referer.query}" if referer.query else ""))
+    return "/"
 
 
 def create_app(
@@ -206,26 +133,7 @@ def create_app(
     app.state.setup_token = setup_token
     app.state.demo_credentials = demo_credentials
     app.state.clock = clock
-    templates = Jinja2Templates(env=_jinja_env())
-
-    def render(
-        request: Request, name: str, context: dict[str, Any] | None = None, status: int = 200
-    ) -> Response:
-        session: auth.Session | None = getattr(request.state, "session", None)
-        csrf = session.csrf_token if session else request.cookies.get(CSRF_COOKIE) or new_csrf_token()
-        base = {
-            "demo": demo,
-            "session": session,
-            "csrf_token": csrf,
-            "farm_name": _settings(request).general.farm_name,
-            "path": request.url.path,
-        }
-        response = templates.TemplateResponse(request, name, {**base, **(context or {})}, status_code=status)
-        if session is None and request.cookies.get(CSRF_COOKIE) != csrf:
-            response.set_cookie(
-                CSRF_COOKIE, csrf, httponly=True, samesite="strict", secure=request.url.scheme == "https"
-            )
-        return response
+    app.state.templates = Jinja2Templates(env=_jinja_env())
 
     @app.middleware("http")
     async def network_guard(
@@ -234,7 +142,7 @@ def create_app(
         # Applied before anything else, static files included: a refused
         # client learns nothing beyond how to change the setting.
         host = request.client.host if request.client else None
-        access = _settings(request).access
+        access = current_settings(request).access
         if not host_allowed(request.headers.get("host"), access):
             return PlainTextResponse(
                 "This console only answers to its own addresses. If you reached it by a network name, "
@@ -256,11 +164,11 @@ def create_app(
 
     @app.exception_handler(SetupRequiredError)
     async def _setup_required(request: Request, _: Exception) -> Response:
-        return _redirect(request, "/setup")
+        return redirect(request, "/setup")
 
     @app.exception_handler(NotSignedInError)
     async def _not_signed_in(request: Request, _: Exception) -> Response:
-        response = _redirect(request, "/login?next=" + urllib.parse.quote(request.url.path))
+        response = redirect(request, "/login?next=" + urllib.parse.quote(_return_path(request)))
         response.delete_cookie(SESSION_COOKIE)
         return response
 
@@ -319,7 +227,7 @@ def create_app(
         if password != confirm:
             return render(request, "setup.html", {**context, "error": "The two passwords don't match."}, 422)
         try:
-            user = auth.create_first_owner(username, password, now=_now(request))
+            user = auth.create_first_owner(username, password, now=now(request))
         except auth.InvalidCredentialsError as e:
             return render(request, "setup.html", {**context, "error": str(e)}, status=422)
         except auth.SetupClosedError:
@@ -344,7 +252,7 @@ def create_app(
         # Normalised, so ::ffff:a.b.c.d and a.b.c.d share one backoff counter.
         address = parse_client(request.client.host if request.client else None)
         client = str(address) if address else "unknown"
-        result = auth.authenticate(username, password, client=client, now=_now(request))
+        result = auth.authenticate(username, password, client=client, now=now(request))
         if isinstance(result, auth.LockedOut):
             wait = int(result.retry_after_s) + 1
             response = render(
@@ -360,7 +268,7 @@ def create_app(
         return _signed_in_response(request, result, safe_next(next))
 
     def _signed_in_response(request: Request, user: auth.User, target: str = "/") -> Response:
-        token, _session = auth.start_session(user, now=_now(request))
+        token, _session = auth.start_session(user, now=now(request))
         response = RedirectResponse(target, status_code=303)
         # No max-age: the cookie ends with the browser, and the server enforces
         # the idle and absolute timeouts regardless.
@@ -469,5 +377,7 @@ def create_app(
 
     app.include_router(public)
     app.include_router(protected)
+    app.include_router(farm_pages.router)
+    app.include_router(assistant_pages.router)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     return app

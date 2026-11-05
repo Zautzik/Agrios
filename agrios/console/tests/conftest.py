@@ -10,12 +10,14 @@ from sqlalchemy import delete
 from agrios.console import auth
 from agrios.console.app import create_app
 from agrios.db import (
+    assistant_threads_table,
     engine,
     init_db,
     login_attempts_table,
     sessions_table,
     settings_changes_table,
     settings_table,
+    tasks_table,
     users_table,
 )
 
@@ -41,6 +43,8 @@ class Clock:
 def _clean() -> None:
     with engine.begin() as conn:
         for table in (
+            assistant_threads_table,
+            tasks_table,
             sessions_table,
             login_attempts_table,
             users_table,
