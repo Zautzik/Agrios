@@ -350,9 +350,21 @@ def create_app(
     def settings_group(request: Request, group: str, session: Owner) -> Response:
         return _group_page(request, _known_group(group))
 
+    def _sweep_before_timeouts_change(request: Request, group: str) -> None:
+        # Sessions that expired under the timeouts in force go first, so a
+        # longer timeout can't bring one back (refreshes sweep only once a minute).
+        if group == "access":
+            access = current_settings(request).access
+            auth.sweep_expired(
+                now=now(request),
+                idle_s=access.session_idle_minutes * 60.0,
+                max_s=access.session_max_hours * 3600.0,
+            )
+
     @protected.post("/settings/{group}", response_class=HTMLResponse)
     async def settings_save(request: Request, group: str, session: Owner) -> Response:
         model = settings_service.GROUPS[_known_group(group)]
+        _sweep_before_timeouts_change(request, group)
         form = {k: v for k, v in (await request.form()).items() if isinstance(v, str)}
         values = forms.parse_form(model, form)
         before = getattr(settings_service.load(), group)
@@ -368,6 +380,7 @@ def create_app(
 
     @protected.post("/settings/{group}/reset/{field}", response_class=HTMLResponse)
     def settings_reset(request: Request, group: str, field: str, session: Owner) -> Response:
+        _sweep_before_timeouts_change(request, _known_group(group))
         try:
             settings_service.reset(_known_group(group), field, username=session.user.username)
         except settings_service.UnknownSettingError:

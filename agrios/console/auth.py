@@ -41,6 +41,11 @@ FIRST_LOCK_S = 30.0
 MAX_LOCK_S = 900.0
 # A failure record this old is forgotten, so occasional typos never add up.
 FORGET_FAILURES_AFTER_S = 24 * 3600.0
+# A session's last_seen is refreshed at most this often. Each refresh is a
+# database commit: measured, it was 6.5 of the 12 ms a page took on the dev
+# laptop. The idle timeout can't be set below 5 minutes, so a minute of slack
+# in when it starts counting changes nothing anyone can notice.
+TOUCH_EVERY_S = 60.0
 
 _hasher = PasswordHasher()
 # Verified against when the username doesn't exist, so a wrong username takes
@@ -205,22 +210,34 @@ def start_session(user: User, *, now: float) -> tuple[str, Session]:
     return token, session
 
 
-def resolve_session(token: str, *, now: float, idle_s: float, max_s: float) -> Session | None:
-    """The live session for token, refreshing its idle timer; None if it doesn't exist or has expired."""
-    token_hash = _token_hash(token)
+def sweep_expired(*, now: float, idle_s: float, max_s: float) -> None:
+    """Deletes every session expired under these timeouts. Run whenever a
+    session is refreshed, and by the settings page before the timeouts
+    change: an expired session must stay expired, even if a longer timeout
+    would cover it."""
     with engine.begin() as conn:
-        # Expired sessions are removed whenever any session is checked, so the
-        # table never grows and an expired token can't be revived later by a
-        # longer timeout setting.
         conn.execute(
             delete(sessions_table).where(
                 or_(sessions_table.c.last_seen < now - idle_s, sessions_table.c.created_at < now - max_s)
             )
         )
+
+
+def resolve_session(token: str, *, now: float, idle_s: float, max_s: float) -> Session | None:
+    """The live session for token, refreshing its idle timer; None if it
+    doesn't exist or has expired. Most requests only read: the refresh, and
+    the sweep of expired sessions with it, happen at most every TOUCH_EVERY_S."""
+    token_hash = _token_hash(token)
+    with engine.connect() as conn:
         row = (
             conn.execute(
                 select(
-                    sessions_table.c.csrf_token, users_table.c.id, users_table.c.username, users_table.c.role
+                    sessions_table.c.csrf_token,
+                    sessions_table.c.last_seen,
+                    sessions_table.c.created_at,
+                    users_table.c.id,
+                    users_table.c.username,
+                    users_table.c.role,
                 )
                 .join(users_table, users_table.c.id == sessions_table.c.user_id)
                 .where(sessions_table.c.token_hash == token_hash)
@@ -228,11 +245,18 @@ def resolve_session(token: str, *, now: float, idle_s: float, max_s: float) -> S
             .mappings()
             .fetchone()
         )
-        if row is None:
-            return None
-        conn.execute(
-            update(sessions_table).where(sessions_table.c.token_hash == token_hash).values(last_seen=now)
-        )
+    if row is None:
+        return None
+    if row["last_seen"] < now - idle_s or row["created_at"] < now - max_s:
+        sweep_expired(now=now, idle_s=idle_s, max_s=max_s)  # this one included
+        return None
+    if now - row["last_seen"] >= TOUCH_EVERY_S:
+        with engine.begin() as conn:
+            conn.execute(
+                update(sessions_table).where(sessions_table.c.token_hash == token_hash).values(last_seen=now)
+            )
+        # The table stays small: expired sessions go whenever anyone is active.
+        sweep_expired(now=now, idle_s=idle_s, max_s=max_s)
     return Session(
         user=User(id=row["id"], username=row["username"], role=row["role"]), csrf_token=row["csrf_token"]
     )

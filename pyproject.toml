@@ -38,6 +38,9 @@ vision = [
 dev = [
     "motmetrics>=1.4",
     "mypy>=1.18",
+    # Console browser tests (pytest -m e2e) and scripts/console_perf.py. Apache-2.0;
+    # its pyee is MIT. Test-only, like the rest of this group.
+    "playwright>=1.55",
     "pytest>=9.1.1",
     "ruff>=0.13",
 ]
