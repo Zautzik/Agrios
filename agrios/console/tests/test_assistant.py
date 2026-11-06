@@ -3,7 +3,6 @@ streamed replies, tool calls shown in words, the farm-tools-only rule,
 conversations kept per account, and what happens when the model is down."""
 
 import json
-import re
 import time
 from collections.abc import Generator, Iterator
 from pathlib import Path
@@ -12,73 +11,15 @@ from typing import Any
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
-from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from pydantic import Field as PydanticField
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from agrios import agent
 from agrios.console import auth, conversations
 from agrios.console.pages import assistant
 from agrios.console.tests.conftest import PASSWORD, T0, page_csrf, sign_in
+from agrios.console.tests.scripted import ScriptedModel, call
 from agrios.db import open_checkpointer
 from agrios.services import farm
-
-
-class ScriptedModel(BaseChatModel):
-    """Answers with the next scripted reply. Tool calls stream as tool-call
-    chunks and text word by word, the way ChatOllama streams them, because
-    the Assistant shows the stream, not only the final message."""
-
-    replies: list[AIMessage | Exception] = PydanticField(default_factory=list)
-    bound: list[list[str]] = PydanticField(default_factory=list)
-    seen: list[list[BaseMessage]] = PydanticField(default_factory=list)
-
-    @property
-    def _llm_type(self) -> str:
-        return "scripted"
-
-    def bind_tools(self, tools: Any, **kwargs: Any) -> "ScriptedModel":
-        self.bound.append([t.name for t in tools])
-        return self
-
-    def _next(self, messages: list[BaseMessage]) -> AIMessage:
-        self.seen.append(messages)
-        reply = self.replies.pop(0)
-        if isinstance(reply, Exception):
-            raise reply
-        return reply
-
-    def _generate(
-        self, messages: list[BaseMessage], stop: Any = None, run_manager: Any = None, **kw: Any
-    ) -> ChatResult:
-        return ChatResult(generations=[ChatGeneration(message=self._next(messages))])
-
-    def _stream(
-        self,
-        messages: list[BaseMessage],
-        stop: Any = None,
-        run_manager: CallbackManagerForLLMRun | None = None,
-        **kw: Any,
-    ) -> Iterator[ChatGenerationChunk]:
-        reply = self._next(messages)
-        if reply.tool_calls:
-            chunks = [
-                {"name": c["name"], "args": json.dumps(c["args"]), "id": c["id"], "index": i}
-                for i, c in enumerate(reply.tool_calls)
-            ]
-            yield ChatGenerationChunk(message=AIMessageChunk(content="", tool_call_chunks=chunks))
-            return
-        for word in re.split(r"(\s)", str(reply.content)):
-            chunk = ChatGenerationChunk(message=AIMessageChunk(content=word))
-            if run_manager:
-                run_manager.on_llm_new_token(word, chunk=chunk)
-            yield chunk
-
-
-def call(name: str, call_id: str = "c1", **args: Any) -> AIMessage:
-    return AIMessage("", tool_calls=[{"name": name, "args": args, "id": call_id}])
 
 
 @pytest.fixture
@@ -456,9 +397,3 @@ def test_text_before_a_tool_call_stays_in_the_saved_answer():
 
 
 ASSISTANT_JS = (Path(assistant.__file__).parents[1] / "static" / "assistant.js").read_text(encoding="utf-8")
-
-
-def test_enter_cannot_send_a_second_message_while_one_is_answering():
-    # requestSubmit() ignores a disabled button, so send() must guard itself.
-    assert "form.dataset.sending" in ASSISTANT_JS
-    assert re.search(r"if \(!message \|\| form\.dataset\.sending\) return;", ASSISTANT_JS)

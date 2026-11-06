@@ -16,6 +16,7 @@ from agrios.console.security import CSRF_COOKIE
 from agrios.console.tests.conftest import (
     PASSWORD,
     SETUP_CODE,
+    T0,
     Clock,
     csrf_from,
     make_client,
@@ -355,3 +356,35 @@ def test_a_page_request_after_the_session_expired_still_comes_back_to_itself(cli
     sign_in(client)
     clock.advance(31 * 60)
     assert client.get("/farm").headers["location"] == "/login?next=/farm"
+
+
+def test_most_requests_only_read_the_session(signed_in, clock):
+    # The refresh is a commit (the measured cost of a page); within a minute
+    # of the last one, a request doesn't write.
+    def last_seen() -> float:
+        with engine.connect() as conn:
+            return float(conn.execute(select(sessions_table.c.last_seen)).scalar_one())
+
+    clock.advance(30)
+    assert signed_in.get("/").status_code == 200
+    assert last_seen() == T0
+    clock.advance(31)
+    assert signed_in.get("/").status_code == 200
+    assert last_seen() == T0 + 61
+
+
+def test_a_longer_timeout_does_not_revive_an_expired_session(app, clock):
+    # B goes idle and expires seconds after A's last refresh swept, so no sweep
+    # has removed it yet; then A, the owner, lengthens the idle timeout.
+    auth.create_user("owner", PASSWORD, "owner", now=clock())
+    with make_client(app) as a, make_client(app) as b:
+        sign_in(a)
+        sign_in(b)
+        clock.advance(29 * 60 + 54)
+        assert a.get("/").status_code == 200  # A refreshes (and sweeps; B is still live)
+        clock.advance(18)  # B is now past 30 idle minutes; A's refresh was 18 s ago
+        csrf = page_csrf(a, "/settings/access")
+        saved = a.post("/settings/access", data={"session_idle_minutes": "1440", "csrf_token": csrf})
+        assert saved.status_code == 200
+        assert settings.load().access.session_idle_minutes == 1440
+        assert b.get("/").status_code == 303  # expired stays expired

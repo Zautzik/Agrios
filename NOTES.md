@@ -377,3 +377,49 @@ Both tool calls showed as succeeded, the answer matched the forecast data, and i
 - and five others.
 
 The tests caught all 17.
+
+
+---
+
+Console C1d: making the console's claims checkable, and the 6 ms a page was spending on bookkeeping.
+
+**Browser tests, with their own control.** The checks I'd been running by hand in Edge now run in CI, against a real uvicorn and Chromium:
+- every screen at 1280 and 390 px, checked for CSP violations, script errors, unnamed controls and horizontal scroll;
+- the keyboard;
+- the main workflows, with the assistant answering from a script.
+
+**The checks themselves are tested.** A deliberately broken page (inline script and style, an over-wide line, an unlabelled box) has to trip every check. Four real regressions each failed a test: removing the Enter guard, `outline: none` on focus, two columns on a phone, and a missing label.
+
+**One mutation that didn't fail was right not to.** Removing my focus rule leaves the browser's default ring, which is still visible. The test now gets the real-world mistake instead, `outline: none`, and catches it.
+
+**The keyboard test's first failure was the test.** It clicked the page before tabbing, which moves where tabbing starts. Started from a fresh page, the skip link comes first, as it should.
+
+**No axe-core.** It's MPL-2.0, and Lighthouse bundles it, so under the licence rule (the same reason Hypothesis isn't used) the accessibility checks are our own:
+- contrast computed from the stylesheet's tokens, light and dark;
+- names for every control;
+- focus at every keyboard stop.
+
+They're narrower than axe's rules, and the plan says what they leave out.
+
+**The access matrix** covers 17 signed-in routes × 3 roles = 51 requests against a table, so a route can't be added without deciding who may use it. Its control: a route meant for owners but guarded only by sign-in is reported, and so is an unlisted one.
+
+**Measuring found waste.** The first performance run gave 11–12 ms of server time for pages that render in under 1 ms. A profile put 10 ms in `resolve_session`, 6.5 of it one commit: every request wrote the idle timer and swept expired sessions.
+- Now the timer is refreshed at most once a minute. The idle timeout can't be under 5 minutes, so the slack is invisible.
+- Page time went from p50 11.07 to 5.38 ms (p95 17.89 to 8.23) on `/`.
+
+The old per-request sweep also kept a promise: an expired session can't be brought back by lengthening the timeout. With sweeps a minute apart, a session that expired seconds after the last one would come back. The settings page now sweeps right before the timeouts change, and a test builds exactly that case. Removing the sweep fails it, and so does reverting to a write per request.
+
+**Screenshots stay out of git.** I'd copied five into `docs/`, then remembered the privacy check: no tracked image or video, deliberately with no allow-list. CI produces them from synthetic data on every run instead.
+
+**The review, after the commit.** A fresh-context reviewer confirmed:
+- **A test leak.** The live-server fixture was session-scoped, so its scripted model and fake forecast stayed patched for every test after the browser tests. Combined in one run (`-m "e2e or not slow"`), five weather tests failed. CI ran the browser tests separately and never saw it. The fixture is now module-scoped, and the combined run gives 237 passed.
+- **Claims ahead of the tests.**
+  - The docs said focus was checked on every screen; only the Farm page was tabbed through. Now every screen is, at both widths.
+  - The docs said the broken page tripped every check; it never exercised the keyboard check or the script-error listener. It now also plants a button with `outline: none`, a script that throws and an icon-only button.
+  - Breaking each of those three checks makes the control fail.
+- **Blind spots in the accessible-name check.**
+  - `aria-hidden` text counted as a name, so an icon-only button with no label passed.
+  - Fixed-position elements were skipped.
+  - A submit input's value wasn't accepted as its name.
+- **A settings race.** Two owners saving the access settings at once could sweep with stale timeouts. The sweep and the change now happen in one step, under the settings lock, with the timeouts read there.
+- **Revocation wording.** A request already in progress when someone signs out can still finish. ADR 0003 no longer says "immediate".

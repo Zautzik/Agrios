@@ -350,6 +350,22 @@ def create_app(
     def settings_group(request: Request, group: str, session: Owner) -> Response:
         return _group_page(request, _known_group(group))
 
+    def _change(request: Request, group: str, apply: Callable[[], settings_service.Settings]) -> Any:
+        """Applies a settings change. For the access group, sessions that
+        expired under the timeouts in force go first, so a longer timeout
+        can't bring one back (refreshes sweep only once a minute). The
+        timeouts are read under the settings lock, in the same step as the
+        change: a save that started earlier can't sweep with stale values."""
+        with settings_service.exclusive():
+            if group == "access":
+                access = settings_service.load().access
+                auth.sweep_expired(
+                    now=now(request),
+                    idle_s=access.session_idle_minutes * 60.0,
+                    max_s=access.session_max_hours * 3600.0,
+                )
+            return getattr(apply(), group)
+
     @protected.post("/settings/{group}", response_class=HTMLResponse)
     async def settings_save(request: Request, group: str, session: Owner) -> Response:
         model = settings_service.GROUPS[_known_group(group)]
@@ -357,7 +373,9 @@ def create_app(
         values = forms.parse_form(model, form)
         before = getattr(settings_service.load(), group)
         try:
-            after = getattr(settings_service.update(group, values, username=session.user.username), group)
+            after = _change(
+                request, group, lambda: settings_service.update(group, values, username=session.user.username)
+            )
         except ValidationError as e:
             # Re-show what was typed, so a mistake in one field doesn't lose the others.
             typed = {name: form[name] for name in values}
@@ -368,8 +386,11 @@ def create_app(
 
     @protected.post("/settings/{group}/reset/{field}", response_class=HTMLResponse)
     def settings_reset(request: Request, group: str, field: str, session: Owner) -> Response:
+        _known_group(group)
         try:
-            settings_service.reset(_known_group(group), field, username=session.user.username)
+            _change(
+                request, group, lambda: settings_service.reset(group, field, username=session.user.username)
+            )
         except settings_service.UnknownSettingError:
             raise HTTPException(status_code=404) from None
         request.state.settings = None
