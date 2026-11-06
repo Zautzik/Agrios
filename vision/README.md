@@ -89,21 +89,18 @@ Runtime dependencies (`vision` extra) are numpy and scipy (BSD-3) and opencv-pyt
 - self-trained re-ID and action models;
 - weights downloaded by script, never committed.
 
-## Deployment scope (decided 2026-11-05)
+## What it's for
 
-The first real site is a **printing press**, not the farm: the farm's land isn't bought yet. That changes what runs where:
+The perception cell watches livestock: cattle and alpacas.
 
-| Where | What the system does | What it deliberately doesn't do |
-|---|---|---|
-| Printing press (Chile, unattended at night) | Flags events for later review: someone on the premises after hours, material at an entrance outside working hours, a fall or someone lying still, someone close to a running press, a camera that can't see. Measures **each press**: running or idle, and output growing in its tray. | No per-person slacking, performance or health scores, and no gait analysis of employees. |
-| The farm (later) | Gait and lameness, activity and isolation of animals, predators at the perimeter and the alpaca house (a puma there is the highest-stakes alarm in the project) | — |
+| Goal | What the system does |
+|---|---|
+| Health | Gait and lameness per animal (stance asymmetry from footfalls), activity levels, and an animal standing apart from the herd or unusually still |
+| Behaviour | Aggression within the herd, by time of day and by pair |
+| Predators | Large animals at the perimeter, and at the alpaca house above all: a puma there is the highest-stakes alarm in the project, so it favours recall over false alarms |
+| Camera health | A camera that's covered, moved, blurred or frozen raises its own alert, so the system never goes silently blind |
 
-Why the press side is drawn that way:
-- **The law.** Chile's Labour Code (arts. 5 and 154) requires control measures to be general, impersonal and written into the internal rules (Reglamento Interno). Dirección del Trabajo doctrine (Ord. 2328/130, 2002) allows cameras for security and safety but not to directly control workers' activity. Health and biometric data are sensitive data under Ley 19.628, and Ley 21.719 tightens that. Gait is both.
-- **The engineering.** Idle time read from a press is a hard number; "slacking" inferred from posture isn't (someone standing still may be checking print quality). Machine-level figures answer the business question without scoring anyone.
-- **The cattle work loses nothing.** Human gait doesn't transfer to quadrupeds (different skeletons, and lameness shows as head bob and uneven weight across four legs). The gait pipeline is developed on the synthetic quadruped fixtures here and, later, on licence-checked animal footage.
-
-Phases 4–5 (gait, behaviour) move to the farm. Phases 2–3 (ingest, detection, tracking) are needed at both sites and come first. Free tools only: no SIM-based alerting.
+The gait pipeline is developed on the synthetic quadruped fixtures here and, later, on licence-checked animal footage. Free tools only, including for alerts.
 
 ## Roadmap
 
@@ -114,7 +111,7 @@ The user interface is a separate track, the Agrios Console ([docs/console-plan.m
 | 1 ✅ | Harness, synthetic streams, negative controls | — |
 | 2 | RTSP ingest (drop-on-full, `CAP_PROP_BUFFERSIZE=1`), tamper/quality, EXIF scrub | CI streams synthetic video through a local RTSP server, so no camera is needed. A camera that can't see properly (tamper, blur, IR switch, shake) raises its own alert, never silence: the Phase 1 scene-change guard dropped 23 frames and missed a real surge. A decoy control (normal-looking frames with objects absent from the ground truth) closes the scene false-alarm gap below. |
 | 3 | ONNX detector (D-FINE / RT-DETR), ByteTrack + OSNet, BEV homography | Add HOTA (the MOTChallenge headline metric) via TrackEval; benchmark DirectML vs OpenVINO on the iGPU. Console C2: setup wizard (calibration, zones) and Cameras screen. |
-| 4 | Animal pose + gait (mmaction2 GCNs, not Shift-GCN: CC BY-NC) | Farm only (see Deployment scope). Needs a side-on view at body height (camera question Q2). Public animal datasets are used to test, not to train, unless their licence allows it. |
-| 5 | Press: after-hours and safety events, per-press running/idle. Farm: animal behaviour, predators. Conformal calibration for both | Calibrate on block maxima: video windows aren't exchangeable. A predator alarm favours recall, and each alarm carries a photo to check, against alarm fatigue. A miss-rate claim needs about 3/x staged events with no misses (rule of three). |
+| 4 | Animal pose + gait (mmaction2 GCNs, not Shift-GCN: CC BY-NC) | Needs a side-on view at body height (camera question Q2). Public animal datasets are used to test, not to train, unless their licence allows it. |
+| 5 | Herd behaviour and predator alerts + conformal calibration | Calibrate on block maxima: video windows aren't exchangeable. A predator alarm favours recall, and each alarm carries a photo to check, against alarm fatigue. A miss-rate claim needs about 3/x staged events with no misses (rule of three). |
 | 6 | Bridge, `/agrios_alert_telemetry`, Mega fail-safe on the Pi 5 | Pi-side ingest re-stamps poses with the Pi's clock: Windows and Pi monotonic clocks aren't comparable. Console C3: incident review and analytics. |
 | 7 | Shadow mode on recorded footage, end-to-end latency, final audit | ≥ 3 alarm-free camera-days per camera before any FACD claim. Console C4: evidence-gated arming and usability test. |

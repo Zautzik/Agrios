@@ -7,7 +7,7 @@ One local web app for everything Agrios does:
 
 It runs on your own network, costs $0, and nothing leaves the site. It works in a desktop browser and on a phone in the field.
 
-**Status: C1 in progress.** Built so far: the shared service layer (C1a), the console shell with sign-in and settings (C1b), and the Assistant and Farm screens (C1c), with decisions below. Everything else here is planned. Licences below were checked against upstream on 2026-11-03.
+**Status: C1 complete.** Built: the shared service layer (C1a), the console shell with sign-in and settings (C1b), the Assistant and Farm screens (C1c), and the evidence around them (C1d): browser tests in CI, the access matrix, accessibility checks, measured performance and decision records ([docs/adr/](adr/README.md)). Everything else here is planned. Licences below were checked against upstream on 2026-11-03.
 
 ## Principles
 
@@ -15,7 +15,7 @@ It runs on your own network, costs $0, and nothing leaves the site. It works in 
 2. **One source of truth.** The console and the chat assistant call the same service functions. "Log a task" from a button and "log a task" from chat run the same code, so they can't disagree. The agent's tools in `main.py` move into a shared `agrios/services/` layer, and both front ends call it.
 3. **Plain language over metrics.** Every screen says what's happening in words first ("Camera 3 lost signal 4 min ago"), with the numbers one tap away. Status is never shown by colour alone: it always has an icon and a label too, which helps colour-blind users and anyone in bright sun.
 4. **Evidence stays visible.** An analytic can't be switched from shadow mode to armed (allowed to trip relays) until its measured false-alarm bound supports it, which takes at least 3 alarm-free camera-days. The UI enforces the project's "no claim without evidence" rule rather than just documenting it.
-5. **Privacy by default.** The console is reachable on the local network only, and every login is required. Footage access is logged. Worker-facing analytics are anonymous per-zone aggregates unless you turn identity tracking on, after the notice question from Phase 0 (Q6) is settled. Footage expires automatically.
+5. **Privacy by default.** The console is reachable on the local network only, and every login is required. Footage access is logged, and footage expires automatically.
 6. **Everything adjustable from the UI, except the safety invariants.** Thresholds, models, units, network exposure, home-screen layout, retention: every setting is editable in **Settings**. Each one is validated, shows its default, and records who changed it and when. Fixed by design and shown read-only:
    - the 250 ms fail-safe timeout, the 50 ms heartbeat, and the requirement that an alert needs at least 2 triggering frames within its window (k-of-n with k ≥ 2);
    - arming an analytic, which unlocks on evidence rather than on a toggle.
@@ -50,7 +50,7 @@ It runs on your own network, costs $0, and nothing leaves the site. It works in 
 | **Farm** | The current Agrios features | Fields (crop, region, status, crop-calendar windows); tasks (log, complete, see pending); a 7-day weather view with frost and rain days marked |
 | **Incidents** | Reviewing what perception flagged | A queue of cards, each with a keyframe strip, the vision model's summary, type, camera, time and the track involved. Buttons **Confirm / Reject / Not sure**, with keyboard shortcuts for fast triage. Filters and export. **Your verdicts become the calibration data** that bounds false alarms. |
 | **Cameras** | Camera health and live view | A snapshot grid, with live video on demand. Per-camera frame rate, dropped frames, tamper and quality flags (blur, glare, covered lens, IR switch), and mode (shadow or armed). |
-| **Analytics** | Trends over time | **Gait:** each animal's asymmetry trend, with "flagged since". **Aggression:** time-of-day heat strip and pair counts. **Security:** geofence entries and dwell times. **Press:** each press's running and idle time and output, measured on the machine, never per person (see the vision README's Deployment scope). **Reliability:** false alarms per camera-day with the 95% bound, per camera and per analytic. |
+| **Analytics** | Trends over time | **Gait:** each animal's asymmetry trend, with "flagged since". **Herd aggression:** time-of-day heat strip and pair counts. **Predators:** perimeter and alpaca-house entries and dwell times. **Reliability:** false alarms per camera-day with the 95% bound, per camera and per analytic. |
 | **Setup** (⚙) | One-time configuration | The camera wizard (below), users and roles, footage retention, privacy mode, notifications, language |
 | **Hardware** (⚙) | The robot bridge and safety chain | Pi and Mega status, heartbeat age, the last real-time latency report, joint telemetry (today's `read_joint_states`), and a relay test that needs a confirmation step and is logged |
 
@@ -136,7 +136,7 @@ Same rules as the rest of the repo: evidence and negative controls.
   - the main workflows complete: log a task, review an incident, run the camera wizard against a synthetic RTSP stream.
   - Negative control: a deliberately broken workflow must fail its test.
 - **Access control tests:** every page and API route is requested as each role and as a logged-out user. The test asserts the exact allowed set, so a new route that forgets its permission check fails CI.
-- **Accessibility:** automated checks for contrast, labels and keyboard navigation (Lighthouse or axe, see licences), and status is never conveyed by colour alone.
+- **Accessibility:** automated checks for contrast, labels and keyboard navigation, written on Playwright because axe-core and Lighthouse fall outside the licence rule ([ADR 0008](adr/0008-licences-include-test-tools.md)); status is never conveyed by colour alone.
 - **Measured usability, not claimed:**
   - a short task-based test with 3–5 real users (you and the people who'll use it);
   - tasks timed, e.g. "find last night's incidents and confirm one";
@@ -209,3 +209,17 @@ Run it with `uv run python -m agrios.console` (or `--demo`). The address and por
 | Weather | Each field's forecast loads after the page (`hx-trigger="load"`); a field without coordinates never reaches the weather service | A slow service never holds up the tasks. Without coordinates, the service would look the field id up as a place name. |
 | Today | An "Ask Agrios" box that opens the Assistant with the question filled in | It only fills the box: a link someone sends you can't make the assistant act |
 
+## C1d: what was built and why (2026-11-05)
+
+| Piece | What it does | Evidence it works |
+|---|---|---|
+| Browser tests (`agrios/console/tests/e2e`, CI job `console-e2e`) | A real uvicorn server and Chromium. Every owner screen at 1280 and 390 px with no CSP violation, script error, unnamed control or horizontal scroll. Task log and complete; the Assistant streaming a scripted answer with its step; a double Enter sends once; a viewer sees the Farm read-only. Screenshots of each screen are uploaded with every CI run. | A broken page (inline script and style, an over-wide line, an unlabelled input) trips every check. Removing the Enter guard, setting `outline: none` on focus, keeping two columns on a phone, or deleting a label each fail a test. |
+| Access matrix (`test_access_matrix.py`) | Each of the 17 signed-in routes, requested as viewer, operator and owner (51 requests), against a table of who may use it. A route missing from the table fails. | A route guarded only by sign-in but meant for owners, and a route nobody listed, are both reported. |
+| Contrast (`test_contrast.py`) | Every colour pairing in the stylesheet, light and dark, against WCAG 2.2 AA (4.5:1 text, 3:1 focus ring). Lowest: 6.00:1 (light, a link on the page background) and 7.34:1 (dark, muted text). Focus ring: 5.42:1 and 7.76:1. | The formula matches known values (21:1, and 4.48:1 for #777 on white), and one lightened token must fail. |
+| Keyboard | Tabbing from the top of the Farm page reaches the skip link first, then the navigation, each task's Done button and the log form, with a visible focus ring at every stop. | `outline: none` fails it. Removing only the custom rule doesn't, and correctly: the browser's own ring is still visible. |
+| Performance (`scripts/console_perf.py`) | The console's own cost, with the forecast faked and the model scripted, on the dev laptop (i7-1255U, Windows 11): server p50 5.0–6.2 ms per page (p95 under 9 ms); browser load p50 44–58 ms; send to first answer word 48 ms. Not gated in CI, like every latency figure here. | The first run showed 11–12 ms per page. Profiling put 10 ms of it in the session check, a commit on every request. The idle timer is now refreshed at most once a minute ([ADR 0003](adr/0003-local-accounts-server-sessions.md)), which halved it. |
+| Decision records ([docs/adr/](adr/README.md)) | Eight records: evidence first, htmx without a build, accounts and sessions, network exposure, typed settings, farm tools only in the browser, streaming over POST, the licence rule for test tools. | Each links the tests or measurements behind it. |
+
+**Screenshots aren't committed.** The repo's privacy check refuses any tracked image or video, with no allow-list (so real footage can never slip in). CI regenerates the screenshots from synthetic data on every run, as the `console-screenshots` artifact.
+
+**What these checks don't cover.** ARIA validity, heading order, landmarks, and how a streaming reply is announced were reviewed by hand, not checked automatically. The usability test with real users, with timed tasks and SUS scores, is in C4.

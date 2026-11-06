@@ -220,7 +220,7 @@ Metrics, measured results and design decisions are in [vision/README.md](vision/
 | Scene: surge recall / MOTA | 0.75 / 0.496 | 0 / 0 | 0.5 / −0.203 |
 | Gait: max GAI error (points) | 1.16 | 23.6 | 4.95 |
 
-## Web console (`agrios/console/`, in progress)
+## Web console (`agrios/console/`)
 
 A local web app over the same services the chat agent calls, planned in [docs/console-plan.md](docs/console-plan.md). It covers the farm features now and perception later. Built so far:
 - first-run owner setup;
@@ -237,7 +237,13 @@ uv sync --extra console
 uv run python -m agrios.console --demo
 ```
 
-Then open http://localhost:8000 and sign in with the demo account shown on the page. The Assistant needs Ollama running with the model from Settings > Assistant; without it the screen says so and how to fix it. By default it's reachable from this machine only; **Settings > Network & access** changes that. The security choices and their references are in the plan's C1b section.
+Then open http://localhost:8000 and sign in with the demo account shown on the page. The Assistant needs Ollama running with the model from Settings > Assistant; without it the screen says so and how to fix it. By default it's reachable from this machine only; **Settings > Network & access** changes that. The security choices and their references are in the plan's C1b section, and the main decisions in [docs/adr/](docs/adr/README.md).
+
+How it's checked:
+- **Browser tests** run in CI on every change (`uv run playwright install chromium`, then `uv run pytest -m e2e`). They cover every screen at desktop and phone width: no Content-Security-Policy violations, no script errors, no unnamed controls, no horizontal scroll, keyboard focus visible. They also run the main workflows. Each CI run carries screenshots of every screen.
+- **An access matrix** checks each route against each role.
+- **Contrast** in both themes is checked against WCAG 2.2 AA.
+- **Measured on a laptop** (i7-1255U, `scripts/console_perf.py`): about 5–6 ms of server time per page, and 44–58 ms to load in a browser.
 
 ## Stack
 
