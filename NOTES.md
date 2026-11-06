@@ -410,3 +410,16 @@ They're narrower than axe's rules, and the plan says what they leave out.
 The old per-request sweep also kept a promise: an expired session can't be brought back by lengthening the timeout. With sweeps a minute apart, a session that expired seconds after the last one would come back. The settings page now sweeps right before the timeouts change, and a test builds exactly that case. Removing the sweep fails it, and so does reverting to a write per request.
 
 **Screenshots stay out of git.** I'd copied five into `docs/`, then remembered the privacy check: no tracked image or video, deliberately with no allow-list. CI produces them from synthetic data on every run instead.
+
+**The review, after the commit.** A fresh-context reviewer confirmed:
+- **A test leak.** The live-server fixture was session-scoped, so its scripted model and fake forecast stayed patched for every test after the browser tests. Combined in one run (`-m "e2e or not slow"`), five weather tests failed. CI ran the browser tests separately and never saw it. The fixture is now module-scoped, and the combined run gives 237 passed.
+- **Claims ahead of the tests.**
+  - The docs said focus was checked on every screen; only the Farm page was tabbed through. Now every screen is, at both widths.
+  - The docs said the broken page tripped every check; it never exercised the keyboard check or the script-error listener. It now also plants a button with `outline: none`, a script that throws and an icon-only button.
+  - Breaking each of those three checks makes the control fail.
+- **Blind spots in the accessible-name check.**
+  - `aria-hidden` text counted as a name, so an icon-only button with no label passed.
+  - Fixed-position elements were skipped.
+  - A submit input's value wasn't accepted as its name.
+- **A settings race.** Two owners saving the access settings at once could sweep with stale timeouts. The sweep and the change now happen in one step, under the settings lock, with the timeouts read there.
+- **Revocation wording.** A request already in progress when someone signs out can still finish. ADR 0003 no longer says "immediate".

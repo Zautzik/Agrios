@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -33,7 +34,9 @@ from agrios.db import engine, settings_changes_table, settings_table
 logger = logging.getLogger(__name__)
 # Saves are serialised so two first saves of a group can't both delete-then-insert
 # its row (a primary-key error on Postgres). Per process, like the sign-in lock.
-_update_lock = threading.Lock()
+# Reentrant: a caller can hold it around update() to make its own read and
+# the update one step (see exclusive()).
+_update_lock = threading.RLock()
 
 # When a change takes effect: "now" on the next request or tool call, or
 # "restart" once the console (or the CLI) is started again. Shown beside each
@@ -274,6 +277,12 @@ def update(
                 ],
             )
     return load(db_engine)
+
+
+def exclusive() -> AbstractContextManager[bool]:
+    """Held around a read-then-update, so no other settings change lands
+    between the two (per process, like the console's other locks)."""
+    return _update_lock
 
 
 def reset(group: str, field: str, *, username: str, db_engine: Engine = engine) -> Settings:

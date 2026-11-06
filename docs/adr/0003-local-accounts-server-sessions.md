@@ -20,7 +20,7 @@ The console shows farm data and, later, camera footage, and it can change settin
 
 ## Consequences
 
-- **Immediate revocation.** Signing out or deleting a user ends the session at once, and a copied database can't be used to sign in.
+- **Revocation.** Signing out or deleting a user ends the session for every later request (one already in progress may still finish), and a copied database can't be used to sign in.
 - **Single process.** The locks are per process, so the console runs as one uvicorn worker. More workers would need database locks.
 - **Cheap session checks.** Writing the idle timer on every request cost half of every page. It's now refreshed at most once a minute, invisible against a 5-minute minimum timeout. An expired session must stay expired even if the timeout is then lengthened, so the settings page sweeps expired sessions before changing it.
 

@@ -4,19 +4,30 @@ problems it found, so the negative control can show it finds them."""
 from playwright.sync_api import Page
 
 # A control has a name a screen reader can announce: a <label>, aria-label,
-# aria-labelledby, or (buttons and links) its own text. Hidden inputs and
-# controls inside <template> don't count.
-UNNAMED = """() => [...document.querySelectorAll('input, select, textarea, button, a[href]')]
-  .filter(el => el.type !== 'hidden' && el.offsetParent !== null)
-  .filter(el => {
-    if (el.getAttribute('aria-label')) return false;
-    const by = el.getAttribute('aria-labelledby');
-    if (by && by.split(' ').some(id => document.getElementById(id)?.textContent.trim())) return false;
-    if (el.labels && el.labels.length && [...el.labels].some(l => l.textContent.trim())) return false;
-    if ((el.tagName === 'BUTTON' || el.tagName === 'A') && el.textContent.trim()) return false;
-    return true;
-  })
-  .map(el => el.outerHTML.slice(0, 120))"""
+# aria-labelledby, its own text (buttons and links), or its value (submit and
+# button inputs). Text marked aria-hidden isn't announced, so it doesn't count:
+# an icon-only button with no label fails. Rendered means it has a box, which
+# also covers position: fixed (offsetParent is null for those).
+UNNAMED = """() => {
+  const spoken = el => [...el.childNodes].map(n =>
+    n.nodeType === Node.TEXT_NODE ? n.textContent
+    : n.nodeType === Node.ELEMENT_NODE && n.getAttribute('aria-hidden') !== 'true' ? spoken(n) : ''
+  ).join('').trim();
+  return [...document.querySelectorAll('input, select, textarea, button, a[href]')]
+    .filter(el => el.type !== 'hidden' && el.getClientRects().length > 0)
+    .filter(el => {
+      if (el.getAttribute('aria-label')?.trim()) return false;
+      const by = el.getAttribute('aria-labelledby');
+      const named = id => document.getElementById(id) && spoken(document.getElementById(id));
+      if (by && by.split(' ').some(named)) return false;
+      if (el.labels && [...el.labels].some(l => spoken(l))) return false;
+      if ((el.tagName === 'BUTTON' || el.tagName === 'A') && spoken(el)) return false;
+      const valued = ['submit', 'button', 'reset'].includes(el.type);
+      if (el.tagName === 'INPUT' && valued && el.value.trim()) return false;
+      return true;
+    })
+    .map(el => el.outerHTML.slice(0, 120));
+}"""
 
 FOCUSED = """() => {
   const el = document.activeElement;

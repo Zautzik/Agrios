@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from playwright.sync_api import Browser, ConsoleMessage, Error, Page, sync_playwright
 
 from agrios import agent
@@ -44,15 +44,24 @@ document.addEventListener('securitypolicyviolation', e =>
 
 # A page with one of each problem the checks below must catch: an inline
 # script and an inline style (both refused by the CSP), a line too long for a
-# phone, and a text box with no label.
+# phone, a text box with no label, an icon-only button with no name, a button
+# whose focus ring is removed, and a script that throws. The submit input has a
+# name (its value) and must not be reported. The CSS and script are files, not
+# inline: inline ones would only be stopped by the CSP and test nothing else.
 BROKEN_PAGE = (
     """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>broken</title></head>
 <body><script>console.log("inline")</script><p style="color:red">styled</p>
 <p>"""
     + "x" * 400
-    + """</p><input name="unlabelled"></body></html>"""
+    + """</p><input name="unlabelled">
+<link rel="stylesheet" href="/__e2e/broken.css"><button id="no-ring">Go</button>
+<button id="icon-only"><span aria-hidden="true">X</span></button>
+<input type="submit" value="Save">
+<script src="/__e2e/broken.js"></script></body></html>"""
 )
+BROKEN_CSS = "#no-ring:focus-visible, #no-ring:focus { outline: none; }"
+BROKEN_JS = 'throw new Error("planted script error");'
 
 
 def forecast(location: str, days: int = 7, **thresholds: Any) -> weather.Forecast:
@@ -87,7 +96,10 @@ class LiveConsole:
     model: ScriptedModel
 
 
-@pytest.fixture(scope="session")
+# Module scope, not session: the fakes below must be undone before any other
+# test module runs, or a combined run (`-m "e2e or not slow"`) would give the
+# weather and agent tests the scripted model and the fake forecast.
+@pytest.fixture(scope="module")
 def live() -> Iterator[LiveConsole]:
     patch = pytest.MonkeyPatch()
     model = ScriptedModel()
@@ -99,10 +111,18 @@ def live() -> Iterator[LiveConsole]:
 
     app = create_app()
 
+    # Test-only routes, on this test app: the negative control for the page checks.
     @app.get("/__e2e/broken", response_class=HTMLResponse)
     def broken() -> str:
-        # Test-only, on this test app: the negative control for the page checks.
         return BROKEN_PAGE
+
+    @app.get("/__e2e/broken.css")
+    def broken_css() -> Response:
+        return Response(BROKEN_CSS, media_type="text/css")
+
+    @app.get("/__e2e/broken.js")
+    def broken_js() -> Response:
+        return Response(BROKEN_JS, media_type="text/javascript")
 
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))

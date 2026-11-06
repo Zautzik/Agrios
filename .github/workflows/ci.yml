@@ -67,8 +67,8 @@ jobs:
   # The console in a real browser (Chromium via Playwright): every screen at
   # desktop and phone width with no Content-Security-Policy violation, script
   # error, unlabelled control or horizontal scroll; keyboard focus visible on
-  # every stop; the main workflows end to end, the assistant answering from a
-  # script. A deliberately broken page must trip every check. Screenshots of
+  # every stop of every screen; the main workflows end to end, the assistant
+  # answering from a script. A deliberately broken page must trip every check. Screenshots of
   # each screen are uploaded with the run.
   console-e2e:
     runs-on: ubuntu-24.04

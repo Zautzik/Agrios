@@ -42,13 +42,15 @@ def test_every_screen_loads_without_errors_and_fits(
     for path in OWNER_PAGES:
         page.goto(live.url + path)
         page.wait_for_load_state("networkidle")
-        found = overflow(page) + unnamed_controls(page)
+        # keyboard() tabs from the top, so it runs before anything is clicked.
+        focus_problems, _ = keyboard(page)
+        found = focus_problems + overflow(page) + unnamed_controls(page)
         problems += [f"{path}: {p}" for p in found]
         screenshot(page, f"{size}-{path.strip('/').replace('/', '-') or 'today'}")
     assert problems + watched.problems == []
 
 
-def test_every_stop_on_the_farm_page_shows_its_focus(
+def test_tabbing_the_farm_page_reaches_what_a_task_needs(
     live: LiveConsole, browser: Browser, users: dict[str, auth.User]
 ) -> None:
     farm.log_task("field-1", "Spray", now=0)
@@ -165,7 +167,8 @@ def test_the_checks_catch_a_broken_page(
     live: LiveConsole, browser: Browser, users: dict[str, auth.User]
 ) -> None:
     # Negative control: a page with an inline script and style, a line too
-    # long for a phone and an unlabelled text box. Every check must fire.
+    # long for a phone, an unlabelled text box, a button whose focus ring is
+    # removed, and a script that throws. Every check must fire.
     watched = open_page(browser, PHONE)
     page = watched.page
     page.goto(live.url + "/__e2e/broken")
@@ -173,5 +176,11 @@ def test_the_checks_catch_a_broken_page(
     violations = [p for p in watched.problems if "CSP violation" in p]
     assert any("script-src" in v for v in violations), watched.problems
     assert any("style-src" in v for v in violations), watched.problems
+    assert any("planted script error" in p for p in watched.problems if p.startswith("script error"))
     assert overflow(page) != []
-    assert any("unlabelled" in p for p in unnamed_controls(page))
+    unnamed = unnamed_controls(page)
+    assert any("unlabelled" in p for p in unnamed)
+    assert any("icon-only" in p for p in unnamed)  # hidden text isn't a name
+    assert not any('value="Save"' in p for p in unnamed)  # a submit's value is
+    focus_problems, reached = keyboard(page)
+    assert any("no-ring" in p for p in focus_problems), reached
